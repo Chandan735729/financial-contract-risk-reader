@@ -716,3 +716,269 @@ regressions in the hybrid retrieval implementation, not for claiming
 production accuracy. The measured numbers (Recall@1=0.90, Recall@3=1.00,
 Recall@5=1.00, MRR=0.95 on this synthetic set — see the Phase 4 completion
 report) are reported with that caveat attached everywhere they appear.
+
+---
+
+# Phase 5 — Evidence Engine & Risk Engine
+
+## P5.1 Initial Risk Engine weights and thresholds
+
+**Location:** `backend/app/services/risk_engine_config.py::RiskEngineConfig`
+
+**What v2 says:** `AI_Risk_Engine_Design.md` §4 gives the combination
+formula's *shape* (`w1..w5` over dense/lexical/entity/condition/rule,
+multiplied by a `doc_type_relevance` gate) and states the weights are
+"initialized from domain reasoning ... and then tuned against the labeled
+eval set" — but no v2 document gives concrete numeric values, and no such
+labeled eval set exists yet (`Dataset_and_Evaluation_Spec.md` §4 real-world
+benchmark is still open work).
+
+**Decision:** `weight_dense=0.10`, `weight_lexical=0.05`, `weight_entity=0.20`,
+`weight_condition=0.10`, `weight_rule=0.35`, plus one addition beyond the
+literal `AI_Risk_Engine_Design.md` §4 formula: `weight_corroboration=0.20`,
+applied when a positive rule hit *and* a supporting financial entity both
+fire on the same clause. This directly encodes
+`Risk_Taxonomy_and_Labeling_Spec.md` §2's explicit severity rule ("a
+`prepayment_penalty` with an extracted 5% reads HIGH; with no extractable
+amount ... it may read MEDIUM") as a scoring term rather than leaving it
+implicit — without it, a rule hit alone (weight 0.35) and a rule hit with a
+corroborating entity (weight 0.35 + up to ~0.20 from `weight_entity`) were
+too close together to reliably separate HIGH from MEDIUM at any single
+threshold. Weights sum to 1.0. `weight_rule` (0.35) and `weight_entity`
+(0.20, or 0.20+0.20=0.40 with corroboration) are each individually >=
+`weight_dense` (0.10), matching PRD_v2.md Product Principle 2 ("rule hits
+and entity strength weighted comparably to or above raw similarity").
+Thresholds: `high_threshold=0.70`, `medium_threshold=0.45`,
+`low_threshold=0.20`, `confidence_floor=0.50`. Confidence combination
+weights: `confidence_weight_agreement=0.35`, `confidence_weight_evidence=0.30`,
+`confidence_weight_condition=0.15`, `confidence_weight_margin=0.20`;
+`confidence_high_threshold=0.75`, `confidence_medium_threshold=0.50`.
+
+**Smallest-safe rationale:** Every weight/threshold is a single named field
+on one versioned dataclass (`RiskEngineConfig.version = "risk_engine_v1"`,
+persisted on every scored `clause_analyses.engine_version`), not scattered
+through call sites — changing any value is a one-line, fully-traceable edit.
+
+**If a real labeled benchmark is supplied:** re-tune every weight/threshold
+against it per `AI_Risk_Engine_Design.md` §7 ("every weight change is
+re-run against the eval harness before merge") using
+`corpus/eval/run_risk_engine_eval.py`; nothing about the formula's shape or
+the config object's field names needs to change.
+
+## P5.2 Confidence heuristic, not yet calibrated
+
+**Location:** `backend/app/services/risk_engine.py::calibrated_confidence`,
+`apply_calibration`
+
+**What v2 says:** `AI_Risk_Engine_Design.md` §4 requires confidence to be
+"calibrated ... fit/validated against the eval set" (reliability curves);
+`Dataset_and_Evaluation_Spec.md` §6 specifies isotonic regression fit on a
+labeled dev split. Phase 5 spec §13 explicitly permits shipping an
+uncalibrated heuristic *as long as it is not claimed to be calibrated* and
+is built so it *can* be calibrated later.
+
+**What's missing:** The labeled dev split itself — only the synthetic
+benchmark (`tests/fixtures/risk_engine_benchmark.py`, P5.5 below) exists,
+which is hand-authored and clean-by-construction, not real labeled data
+suitable for fitting a calibration curve.
+
+**Decision:** `calibrated_confidence()` computes a weighted combination of
+`signal_agreement`, `evidence_completeness`, `condition_completeness`, and
+`retrieval_margin` (all `[0, 1]`), then passes the result through
+`apply_calibration()` — an explicit identity-mapping hook, documented
+in-line as the exact seam where an isotonic-regression fit would plug in
+once `Dataset_and_Evaluation_Spec.md` §6's dev split exists. No test or
+docstring in this codebase claims the current output is calibrated.
+
+**If a labeled dev split is supplied:** fit isotonic regression per
+`Dataset_and_Evaluation_Spec.md` §6, replace `apply_calibration`'s body with
+the fitted mapping, re-validate on held-out/test splits; nothing else in
+the confidence pipeline needs to change.
+
+## P5.3 Abstention: LOW-band vs. below-LOW-band are different abstention paths
+
+**Location:** `backend/app/services/risk_engine.py::apply_abstention_rules`
+
+**What v2 says:** `AI_Risk_Engine_Design.md` §6 gives four abstention
+triggers, including "`raw_risk_score` falls in the ambiguous band between
+`LOW_THRESHOLD` and `MEDIUM_THRESHOLD` **and** `confidence_score` is below
+`CONFIDENCE_FLOOR`" and "No retrieval match **and** no rule hit **and** no
+extractable financial entity ... this is the concrete mechanism behind
+Product Principle 3." It does not explicitly reconcile these with the
+separate requirement that "`LOW` is only assigned when there is positive
+evidence of low risk."
+
+**What's missing:** Nothing from v1 — this is v2's own under-specification
+of how the *confidence-floor* gate (literally the LOW-scored band) and the
+*positive-evidence* gate (required for any LOW at all) compose with each
+other.
+
+**Decision:** Two distinct cases, both implemented, deliberately not
+merged: (1) `raw_risk_score` actually lands in `[low_threshold,
+medium_threshold)` — the literal "ambiguous band" — and is gated on *both*
+`has_positive_low_evidence` *and* `confidence_score >= confidence_floor`;
+(2) `raw_risk_score` falls *below* `low_threshold` entirely (near-zero
+signal) but an explicit negative-example/negated-rule match exists
+(`Risk_Taxonomy_and_Labeling_Spec.md` §4 "confirmed absence") — this is
+treated as a definitive, high-precision determination on its own and is
+**not** additionally gated on `confidence_floor` (confidence is still
+computed and reported independently; it may legitimately be LOW). Without
+this split, a case like "Borrower may prepay at any time without penalty"
+(near-zero raw score, since nothing risky is present to weight-sum, but a
+crisp, real rule-based negation) was being abstained to `UNKNOWN` purely
+because its *low, honestly-computed* confidence score fell under the same
+floor meant for genuinely ambiguous mid-band cases — silently defeating
+Phase 5 spec test case B's expected LOW-with-evidence outcome.
+
+**If v1/later spec revision is supplied:** if a single unified gate is
+specified instead, collapse the two branches in
+`apply_abstention_rules` — the two `has_positive_low_evidence` checks are
+already the same predicate, only the confidence-floor application differs.
+
+## P5.4 Rule layer: `auto_renewal_notice` is negation-insensitive
+
+**Location:** `backend/app/services/risk_rules.py::_RuleDefinition.negation_sensitive`
+
+**What v2 says:** Phase 5 spec §16 requires rules to "distinguish
+'prepayment penalty' from 'prepayment without penalty'" — negation-aware by
+default — without addressing whether every rule's secondary term is equally
+negatable.
+
+**What's missing:** Nothing from v1 — an empirical rule-design finding made
+while building the synthetic benchmark (P5.5): for four of the five rules,
+the secondary term ("penalty," "fee," "acceleration," "waiver") *is* the bad
+outcome itself, so a nearby negation cue ("without," "no") genuinely means
+"confirmed safe." For `auto_renewal_notice`, the secondary term "notice" is
+not the bad outcome — it is the escape-hatch half of the *canonical positive
+phrasing* of the risk itself (`Risk_Taxonomy_and_Labeling_Spec.md` §1.3
+`auto_renewal`: "renews automatically **unless** the policyholder provides
+notice"). Treating "unless" as a negation cue there flips almost every
+real-world instance of this exact MEDIUM-risk pattern to "confirmed safe" —
+backwards.
+
+**Decision:** Added a per-rule `negation_sensitive: bool` field (default
+`True`); `auto_renewal_notice` is the only rule set to `False`. A genuinely
+non-renewing clause ("this policy does not renew automatically") still
+never fires the rule at all, because it lacks the *secondary* "notice" term
+co-occurring — negation-insensitivity only changes how a **firing** match is
+polarized, not whether it fires.
+
+**If v1 is supplied:** if a different negation policy is specified for this
+rule, it's a one-field change; the other four rules' negation-sensitive
+behavior is unaffected either way.
+
+## P5.5 Risk Engine evaluation is synthetic-only
+
+**Location:** `backend/tests/fixtures/risk_engine_benchmark.py`,
+`corpus/eval/run_risk_engine_eval.py`
+
+Same posture as Phase 3/4's synthetic benchmarks (P3.6, P4.9):
+`Dataset_and_Evaluation_Spec.md` §4's real-world benchmark (independently
+annotated real documents, inter-annotator agreement, messy/varied sources)
+does not exist yet. The 15-case synthetic benchmark here is hand-authored
+and clean-by-construction — each case's `gold_risk_level` is the label a
+correctly working engine should assign *by construction* (the text was
+written to exercise one specific, documented engine behavior: explicit
+HIGH via rule+entity corroboration, MEDIUM via rule alone, LOW via
+confirmed negation, UNKNOWN via ambiguity/no-signal/wrong-category/low
+segmentation confidence). It is useful for (a) proving
+`risk_engine_metrics.evaluate_risk_engine`'s arithmetic is correct and (b) a
+directional regression check on the engine's weight/threshold/rule behavior
+against known structural patterns — **not a production accuracy claim**.
+The measured numbers (macro F1 = 1.00, high-risk precision/recall = 1.00 on
+this synthetic set — see the Phase 5 completion report) are reported with
+that caveat attached everywhere they appear, exactly as required by
+`Dataset_and_Evaluation_Spec.md` §4's real-world-vs-synthetic distinction.
+
+## P5.6 Retrieval/lexical signals never produce evidence spans
+
+**Location:** `backend/app/services/evidence_engine.py` (module docstring),
+`risk_engine.py::score_clause`
+
+**What v2 says:** `Grounding_and_Evidence_Spec.md` §2 requires an
+`EvidenceSpan` "for each candidate signal contributing to a clause's risk
+score (retrieval match, rule hit, extracted entity, extracted condition)."
+
+**What's missing:** Nothing from v1 — a genuine tension in v2's own text.
+A `corpus_pattern.pattern_text` retrieval/lexical match is *not* clause
+text; there is no honest substring of `clause.raw_text` a bare retrieval
+match can point to as "the evidence" (unlike a rule hit, entity, or
+condition, all of which are found *within* the clause itself).
+
+**Decision:** Retrieval (`dense_similarity`) and lexical (`lexical_score`)
+remain full numeric inputs to `raw_risk_score` and to `signal_agreement`
+(confidence), but the Evidence Engine never fabricates a clause-text span
+to represent a bare corpus-pattern match. Concretely, this is enforced by
+weighting them low (P5.1) and, more importantly, by the fact that
+`evidence_completeness`/the HIGH-MEDIUM verified-evidence gate (Phase 5
+spec §17) can only be satisfied by `entity`/`condition`/`rule`-sourced
+spans. This is the literal mechanism behind Phase 5 spec test case D ("high
+similarity but safe clause must not become HIGH merely because similarity
+is high") — a retrieval-only signal, however strong, can never alone
+satisfy the evidence gate.
+
+**If v1 is supplied:** if a defined mapping from corpus-pattern match to a
+legitimate clause-text span is specified (e.g., "the query text itself, in
+full, is the evidence" or a token-alignment scheme), add a fourth
+`EvidenceSource` in `evidence_engine.py` implementing it; `risk_engine.py`'s
+scoring/gating logic does not need to change to accommodate it.
+
+## P5.7 Evidence spans inherit the clause's single `page_number`
+
+**Location:** `backend/app/services/evidence_engine.py::assemble_and_verify_evidence`
+
+**What v2 says:** `API_and_Data_Models.md` §2 gives `evidence_spans` a
+single nullable `page_number` column. Phase 5 spec §4 ("Evidence Offsets")
+requires using "the actual Phase 3/4 source-coordinate conventions" and
+warns not to assume Phase 3 offsets are raw-document offsets.
+
+**What's missing:** Nothing new — this directly follows P3.1
+(`Clause.page_number` already holds only the clause's *starting* page, no
+page-range) and P3.2 (`start_char`/`end_char` are block-traceable, not a
+`raw_text` slice bound against a canonical whole-document text that isn't
+persisted). There is no block-level page mapping available anywhere below
+the clause for the Evidence Engine to consult.
+
+**Decision:** Every verified evidence span for a clause is stamped with
+that clause's own `page_number` (`Clause.page_number`, passed through
+unchanged) — never a page number invented, inferred, or claimed by a
+candidate. This is deliberately conservative: it can only be "wrong" in the
+same limited way `Clause.page_number` itself already can be (a clause
+spanning multiple pages), a pre-existing, already-documented limitation
+(P3.1) — never independently wrong for one span vs. another within the same
+clause, since they all inherit the identical value.
+
+**If a real per-span page mapping is later required:** would need Phase 3
+to persist a page-range or block-level page map first (P3.1's "if a
+page-range is later required" note); `evidence_engine.py`'s `page_number`
+parameter is already threaded through per-candidate, so only the *value*
+callers pass would need to change, not the module's structure.
+
+## P5.8 Per-clause scoring isolation via SAVEPOINT
+
+**Location:** `backend/app/services/risk_scoring_service.py::score_document`
+
+**What v2 says:** Phase 5 spec §19: "If one clause analysis fails, do not
+corrupt unrelated clauses. Do not leave misleading partial data."
+
+**What's missing:** Nothing from v1 — no existing service in this codebase
+(segmentation, clause understanding) needed per-item transactional
+isolation *within* a single `Session`, since none of them can partially
+fail mid-item the way `risk_engine.score_clause` can (e.g., a version
+mismatch `ValueError` raised after some fields were already about to be
+written).
+
+**Decision:** `score_document` wraps each clause's `score_pending_analysis`
+call in `Session.begin_nested()` (a SQL `SAVEPOINT`), which SQLAlchemy
+supports uniformly on both the SQLite test backend and PostgreSQL. On an
+exception, only that clause's SAVEPOINT rolls back — its `clause_analyses`
+row remains exactly the Phase 4 pending-placeholder state it was already
+in, never a half-updated row — while every other clause's already-committed
+(flushed) work in the same outer transaction is untouched. The failure is
+logged with `error_category="risk_engine_failure"` (safe fields only, no
+clause text) and counted in `DocumentScoringSummary.failed`.
+
+**If v1 is supplied:** if a different isolation mechanism is specified
+(e.g., one `Session`/transaction per clause), only `score_document`'s loop
+body changes; `score_pending_analysis` itself has no transaction-management
+code to change.
