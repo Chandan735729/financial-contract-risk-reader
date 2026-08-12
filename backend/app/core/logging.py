@@ -51,6 +51,8 @@ ALLOWED_LOG_FIELDS: frozenset[str] = frozenset(
         "count",
         "document_type",
         "environment",
+        "low_confidence_flag",
+        "segmentation_confidence",
     }
 )
 

@@ -5,8 +5,8 @@ v2 document explicitly deferred to a "v1" / "original" document that does
 not exist anywhere in this repository (see `docs/IMPLEMENTATION_AUDIT.md`
 §3.1 for the full list of such references), plus implementation choices
 (not v1-gaps) material enough to affect later phases. Phase 0/1 decisions
-are in the sections below; Phase 2 decisions are in their own section near
-the end of this file.
+are in the sections below; Phase 2 and Phase 3 decisions are in their own
+sections near the end of this file.
 
 Per the standing source-of-truth rule: these are the smallest reasonable,
 easy-to-change decisions — not reconstructions of remembered v1 content, not
@@ -343,3 +343,172 @@ used: `413` for `FILE_TOO_LARGE`, `415` for `UNSUPPORTED_FILE_TYPE`, `422`
 for `CORRUPTED_FILE` / `PASSWORD_PROTECTED` / `LOW_TEXT_CONTENT` (all
 well-formed-request-but-semantically-invalid-content cases). Not a v1-gap —
 a REST-convention judgment call, isolated to one dict, trivial to change.
+
+---
+
+# Phase 3 — Clause Segmentation & Structure Analysis
+
+## P3.1 `Clause.page_number` holds the clause's *starting* page only
+
+**Location:** `backend/app/models/db_models.py::Clause.page_number`;
+`backend/app/services/segmentation_service.py::segment_document`
+
+**What v2 says:** `API_and_Data_Models.md` §2 gives `clauses` a single
+`page_number INTEGER, nullable` column. `Technical_Architecture_v2.md` §3
+says the Segmentation Service outputs "text + position" without specifying
+whether a clause needs to carry a page *range*.
+
+**What's missing:** Nothing from v1 — this is v2's own schema not
+anticipating that a single clause can legitimately span multiple pages
+(Phase 3 spec §7 explicitly requires this: "the segmentation engine must be
+able to produce a single logical clause spanning pages").
+
+**Decision:** `Clause.page_number` is set to the page of the *first*
+contributing text block. No new column was added for an end page — per
+Phase 3 spec §7's explicit instruction ("inspect the v2 contract first. Do
+not silently invent a new public schema"), the existing single-column shape
+is respected as-is rather than extended. A clause's full page span is
+recoverable later (if ever needed) from its contributing text's position
+relative to `documents`' parsed pages — Phase 3 does not need it, since
+`page_number` here exists for citation/display purposes ("this clause is
+found around page N"), not for page-range analytics.
+
+**Smallest-safe rationale:** Zero schema change; a `null`/single-page value
+degrades gracefully for every consumer that assumes one page per clause
+(e.g. Frontend_Specification_v2.md's evidence display, which cites *spans*,
+not whole-clause page ranges, per `Grounding_and_Evidence_Spec.md`).
+
+**If a page-range is later required:** Add a nullable `end_page_number`
+column via a new Alembic migration; `segment_document()` already computes
+the last contributing block's `page_number` internally (visible on
+`SegmentedClause` via its blocks) and would only need one new field wired
+through `persist_clauses`.
+
+## P3.2 `Clause.start_char`/`end_char` reference source-block offsets, not a `raw_text` slice bound
+
+**Location:** `backend/app/services/segmentation_models.py::SegmentedClause`
+
+**What v2 says:** Same "text + position" underspecification as P3.1 — no
+document defines whether `start_char`/`end_char` must satisfy
+`raw_text == source_document_text[start_char:end_char]` exactly.
+
+**What's missing:** Nothing from v1 (v2's own gap). Exact reconstruction is
+not achievable without also persisting a canonical whole-document text
+string nowhere in the current schema, and Phase 2 explicitly does not
+persist `ParsedDocument` text (see the Phase 2 entry below).
+
+**Decision:** `start_char` = the first contributing `DocumentTextBlock`'s
+own `start_char` (Phase 2's per-document reading-order offset numbering);
+`end_char` = the last contributing block's `end_char`. `raw_text` is a
+separate reconstruction (blocks joined with `"\n"`, with suppressed
+headers/footers and DOCX explicit headings excluded) that does not attempt
+to equal that exact character range. This is documented on
+`SegmentedClause` itself and enforced as a *traceability* invariant, not an
+*exact-slice* invariant, by `validate_invariants()` — see Phase 3 spec §10
+("Where exact character-level reconstruction is impossible ... document the
+expected invariant").
+
+**If v1 is supplied** (or a later phase needs exact reconstruction): would
+require persisting the canonical parsed document text and redefining these
+offsets against it — a larger change than this phase's scope justifies.
+
+## P3.3 Segmentation confidence is a documented heuristic, not a calibrated score
+
+**Location:** `backend/app/services/segmentation_service.py` (`_BASE_CONFIDENCE`,
+`_score_clause`, `_detect_document_anomaly`)
+
+Phase 3 spec §8 explicitly permits this ("A documented heuristic confidence
+is acceptable at this phase") and requires it be clearly distinguished from
+the Risk Engine's future calibrated `confidence_score`. Not a v1-gap — an
+explicit, sanctioned MVP scope boundary. The heuristic combines a base score
+per boundary-detection signal (numbered/lettered/heading/fallback) with
+penalties for oversized, undersized, or over-fragmented clauses, plus
+document-level anomaly detection (single clause dominating the document,
+many tiny fragments, non-increasing top-level numbering) that forces
+`low_confidence_flag=True` across the whole document. All thresholds
+(`_LARGE_CLAUSE_CHARS`, `_TINY_CLAUSE_CHARS`, `_LOW_CONFIDENCE_THRESHOLD`,
+etc.) are named module constants, not tuned against a labeled benchmark —
+see P3.6 below for what the current benchmark can and cannot validate.
+
+**If/when a real annotated segmentation benchmark exists:** threshold values
+and the base-confidence table are the only things that should need
+adjusting; the signal-detection logic itself does not need to change.
+
+## P3.4 Clause granularity: every numbered unit is its own clause, not grouped under its parent section
+
+**Location:** `backend/app/services/segmentation_service.py::_assemble_groups`
+
+**What v2 says:** Neither `Technical_Architecture_v2.md` nor
+`Risk_Taxonomy_and_Labeling_Spec.md` defines what counts as one "clause" —
+whether "3. Repayment" plus its "3.1"/"3.2" sub-items should be one clause
+or three.
+
+**Decision:** Every numbered unit at any level (top-level "1.", nested
+"3.1"/"1.1.1", lettered "(a)", roman "(ii)") becomes its own clause. A
+heading line (DOCX explicit style, or a PDF bold/short heuristic) sets
+`section_heading` metadata for the clauses that follow it rather than
+becoming — or merging into — a clause itself. This matches how risk
+analysis in this product actually operates: a `ClauseAnalysis` record
+(`Risk_Taxonomy_and_Labeling_Spec.md` §6) is meant to carry one risk
+judgment, and "3.1" and "3.2" under "3. Repayment" routinely carry different
+risk categories (e.g. a prepayment penalty vs. a payment schedule) — merging
+them would blur two distinct risk signals into one record.
+
+**Smallest-safe rationale:** Matches the leaf-level granularity real
+contract-analysis corpora (e.g. CUAD, referenced in
+`Dataset_and_Evaluation_Spec.md` §1) label at, and keeps clause boundaries
+mechanically derivable from numbering alone rather than requiring a
+numbering-hierarchy parser.
+
+## P3.5 Repeated header/footer suppression is a documented heuristic
+
+**Location:** `backend/app/services/segmentation_service.py::_detect_repeated_lines`
+
+Phase 3 spec §5 requires suppressing "obvious" repeated headers/footers
+without specifying a detection algorithm. Two independent heuristics are
+used: (1) a line matching a bare page-number shape ("Page 3 of 12"), and (2)
+a short (≤60 char) line whose digit-normalized text repeats on ≥3 distinct
+pages. Both thresholds (`_HEADER_FOOTER_CANDIDATE_MAX_CHARS = 60`,
+`_MIN_REPEAT_PAGES = 3`) are named constants chosen to avoid two known
+failure modes found during development: (a) applying digit-normalization to
+long lines caused unrelated sentences that merely contain different numbers
+to be misidentified as a repeated footer (fixed by restricting
+digit-normalized comparison to short candidate lines only); (b) requiring
+repetition on only 2 pages would treat a genuinely repeated 2-page document
+title as a footer. Not a v1-gap — no v2 document specifies these thresholds.
+
+## P3.6 Segmentation evaluation is synthetic-only
+
+**Location:** `backend/tests/fixtures/segmentation_benchmark.py`,
+`corpus/eval/run_segmentation_eval.py`
+
+`Dataset_and_Evaluation_Spec.md` §4 requires a real-world benchmark
+(independently annotated real documents, messy/scanned sources,
+inter-annotator agreement on a 20% sample). No such benchmark exists yet —
+building one requires real (permission-cleared) source documents and human
+annotation this phase does not have. The ten synthetic benchmark cases
+built here are hand-authored, clean-by-construction, and useful only for
+(a) proving the evaluation harness's metric computations are correct and
+(b) catching future regressions in the rule engine's behavior on known
+structural patterns. **The measured numbers (P=1.00, R=0.97, F1=0.98
+overall on this synthetic set, see the Phase 3 completion report) are not a
+production-accuracy claim** — see the explicit warning printed by
+`run_segmentation_eval.py` and in `segmentation_benchmark.py`'s module
+docstring. Building the real benchmark remains open work under
+`Dataset_and_Evaluation_Spec.md` §4 / `Implementation_Roadmap.md` Phase 5.
+
+## P3.7 `ProcessingStage` transition on segmentation completion
+
+**Location:** `backend/app/services/segmentation_service.py::persist_clauses`
+
+Extends the pattern already established in Phase 2 (`SEGMENTING` set after
+a successful upload/parse): a successful `persist_clauses` call (at least
+one clause produced) advances the job to `ProcessingStage.UNDERSTANDING`
+(Phase 4's entry point). A `ParsedDocument` with zero usable blocks (Phase 3
+spec §13 "empty/invalid parser result") advances the job to `FAILED` with
+`error_code = ErrorCode.SEGMENTATION_LOW_CONFIDENCE` — the only existing
+canonical code that fits. A merely *low-confidence-but-non-empty* result
+does **not** fail the job (Phase 3 spec §9: "Do not fail an otherwise
+readable document merely because segmentation confidence is low") — it
+still advances to `UNDERSTANDING` with `low_confidence_flag=True` on its
+clauses, for later phases/UI to surface honestly.
