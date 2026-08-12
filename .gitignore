@@ -73,6 +73,13 @@ generated_reports/
 media/
 
 # ==================================================
+# Evaluation run outputs (Phase 6) — timestamped, regenerable, never a
+# source-of-truth artifact; keep the repo from accumulating one file per run.
+# ==================================================
+/corpus/eval/results/*.json
+!/corpus/eval/results/.gitkeep
+
+# ==================================================
 # OS / editor artifacts
 # ==================================================
 .DS_Store

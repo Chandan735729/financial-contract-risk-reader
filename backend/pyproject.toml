@@ -8,7 +8,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["app", "tests"]
+# "corpus" is Phase 6's evaluation framework (corpus/eval/) — part of this
+# same project, reachable via backend/pytest.ini's second pythonpath entry
+# (the repo root), not a third-party package.
+known-first-party = ["app", "tests", "corpus"]
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI's Depends()/File()/Query()/etc. in argument defaults is the
@@ -23,9 +26,21 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 disallow_untyped_defs = false
 exclude = ["alembic/versions"]
+# Mirrors pytest.ini's second `pythonpath` entry — the repo root, so
+# `corpus.eval.*` (Phase 6's evaluation framework, referenced from
+# backend/tests/services/test_eval_*.py) resolves the same way for mypy as
+# it does for pytest.
+mypy_path = ".."
 
 [[tool.mypy.overrides]]
 module = "tests.*"
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# corpus/eval/ is Phase 6's evaluation framework — same relaxed-typing
+# posture as tests.* (development/evaluation code, not production app code).
+module = "corpus.*"
 disallow_untyped_defs = false
 check_untyped_defs = true
 

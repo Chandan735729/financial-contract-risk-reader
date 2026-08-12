@@ -1,11 +1,19 @@
 #!/usr/bin/env python
 """Segmentation evaluation harness — Dataset_and_Evaluation_Spec.md SS5,
 Phase 3 spec SS12, Implementation_Roadmap.md Phase 5 ("should be
-scaffolded early ... ready the moment [parsing] produces real output").
+scaffolded early ... ready the moment [parsing] produces real output"),
+Phase 6 spec SS3.
 
 Runs `segment_document()` against the synthetic benchmark
 (backend/tests/fixtures/segmentation_benchmark.py) and reports boundary
-precision/recall/F1 plus segmentation-quality diagnostics.
+precision/recall/F1, text coverage, and segmentation-quality diagnostics
+per document-structure category and overall.
+
+**Dataset split status (Phase 6 spec SS1):** all 10 cases here are treated
+as **DEV/regression** data only. No held-out segmentation TEST split exists
+yet — stated explicitly rather than silently treating this set as
+representative of held-out performance (Phase 6 spec: "If a real benchmark
+does not yet exist, say so explicitly").
 
 IMPORTANT — READ BEFORE CITING THESE NUMBERS:
 This benchmark is synthetic and hand-authored for development/regression
@@ -42,18 +50,21 @@ from tests.fixtures.segmentation_benchmark import build_benchmark  # noqa: E402
 def main() -> int:
     cases = build_benchmark()
     if not cases:
-        print("No benchmark cases found — nothing to evaluate.")
+        print("No benchmark cases found - nothing to evaluate.")
         return 1
 
-    print(f"Segmentation evaluation — {len(cases)} synthetic benchmark cases")
-    print("=" * 78)
-    print(f"{'case':35s} {'category':20s} {'P':>5s} {'R':>5s} {'F1':>5s}")
-    print("-" * 78)
+    print(
+        f"Segmentation evaluation (DEV split - no held-out TEST split exists yet) - {len(cases)} synthetic benchmark cases"
+    )
+    print("=" * 90)
+    print(f"{'case':35s} {'category':20s} {'P':>5s} {'R':>5s} {'F1':>5s} {'coverage':>9s}")
+    print("-" * 90)
 
     pooled_predicted: set[int] = set()
     pooled_gold: set[int] = set()
     offset = 0
     all_clauses: list[SegmentedClause] = []
+    coverage_values: list[float] = []
 
     for case in cases:
         result = segment_document(case.parsed)
@@ -61,19 +72,29 @@ def main() -> int:
 
         pred = predicted_boundaries(result.clauses)
         metrics = compute_boundary_metrics(pred, set(case.gold_boundaries))
+
+        coverage = (
+            result.diagnostics.covered_chars / result.diagnostics.total_chars
+            if result.diagnostics and result.diagnostics.total_chars > 0
+            else 0.0
+        )
+        coverage_values.append(coverage)
+
         print(
             f"{case.name:35s} {case.category:20s} "
-            f"{metrics.precision:5.2f} {metrics.recall:5.2f} {metrics.f1:5.2f}"
+            f"{metrics.precision:5.2f} {metrics.recall:5.2f} {metrics.f1:5.2f} {coverage:9.2%}"
         )
 
         pooled_predicted |= {p + offset for p in pred}
         pooled_gold |= {g + offset for g in case.gold_boundaries}
         offset += len(case.parsed.blocks) + 1  # +1 guard gap between documents
 
-    print("-" * 78)
+    print("-" * 90)
     overall = compute_boundary_metrics(pooled_predicted, pooled_gold)
+    avg_coverage = sum(coverage_values) / len(coverage_values) if coverage_values else 0.0
     print(
-        f"{'OVERALL (micro-averaged)':56s} {overall.precision:5.2f} {overall.recall:5.2f} {overall.f1:5.2f}"
+        f"{'OVERALL (micro-averaged)':56s} {overall.precision:5.2f} {overall.recall:5.2f} "
+        f"{overall.f1:5.2f} {avg_coverage:9.2%}"
     )
     print()
 
@@ -88,7 +109,7 @@ def main() -> int:
     print(f"  low_confidence_rate     {diagnostics.low_confidence_rate:.2%}")
     print()
     print(
-        "NOTE: synthetic benchmark only — not production accuracy. "
+        "NOTE: synthetic benchmark only - not production accuracy. "
         "See Dataset_and_Evaluation_Spec.md SS4 for the real-world benchmark this does not replace."
     )
     return 0

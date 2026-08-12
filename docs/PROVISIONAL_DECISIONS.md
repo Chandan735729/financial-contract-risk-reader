@@ -982,3 +982,202 @@ clause text) and counted in `DocumentScoringSummary.failed`.
 (e.g., one `Session`/transaction per clause), only `score_document`'s loop
 body changes; `score_pending_analysis` itself has no transaction-management
 code to change.
+
+---
+
+# Phase 6 — Reproducible Evaluation Framework
+
+## P6.1 Evaluation logic lives under `corpus/eval/`, not `backend/app/services/`
+
+**Location:** `corpus/eval/schema.py`, `corpus/eval/metrics/*.py`,
+`corpus/eval/datasets/*.py`
+
+**What v2 says:** Phase 6 spec §1 explicitly asks for "a clear benchmark
+organization... At minimum support: `corpus/eval/` with distinct logical
+groups." Phases 3–5 instead put metrics modules in `backend/app/services/
+*_metrics.py` (`segmentation_metrics.py`, `retrieval_metrics.py`,
+`risk_engine_metrics.py`), reusing production-service placement for
+evaluation code.
+
+**Decision:** New Phase 6 ground-truth datasets and metric functions
+(entity, condition, evidence, calibration, abstention, ablation) live under
+`corpus/eval/datasets/` and `corpus/eval/metrics/` respectively — a
+deliberate departure from the Phase 3-5 placement, made because Phase 6's
+own instructions ask for `corpus/eval/` to be the organizing structure by
+name. Phase 3-5's existing `*_metrics.py` modules were **not** moved (that
+would be a disruptive, unnecessary refactor of already-shipped, tested
+code) — `corpus/eval/run_segmentation_eval.py` and
+`run_retrieval_eval.py`/`run_risk_engine_eval.py` continue to import them
+directly. The two placements coexist by design; there is no plan to
+unify them retroactively.
+
+**Import bootstrap:** every module in `corpus/eval/` inserts both the repo
+root (for `corpus.eval.*` absolute imports) and `backend/` (for `app.*`/
+`tests.*`) onto `sys.path` at import time — mirroring the existing
+`corpus/eval/run_*.py` scripts' pattern from Phase 3/4. `backend/pytest.ini`
+gained a second `pythonpath` entry (`..`, the repo root) so
+`backend/tests/*.py` can import `corpus.eval.*` too, letting the evaluation
+framework's own tests (Phase 6 spec §19) live alongside every other test
+under `backend/tests/services/` rather than needing a second test runner.
+
+**If v1 is supplied:** no structural conflict expected — v1 material would
+inform dataset *content*, not this placement decision.
+
+## P6.2 One canonical `ClauseGroundTruth` schema, not one per evaluation area
+
+**Location:** `corpus/eval/schema.py`
+
+**What v2 says:** Phase 6 spec §2 lists ground-truth requirements spanning
+risk category/subcategory/severity, evidence spans, trigger/condition/
+consequence/affected party, financial entities, ambiguity, and expected
+abstention — the same set of fields `Risk_Taxonomy_and_Labeling_Spec.md` §6
+already defines as the canonical `ClauseAnalysis` shape.
+
+**Decision:** One `ClauseGroundTruth` dataclass backs entity, condition,
+evidence, risk-classification, and abstention evaluation from a single
+shared annotation per clause, mirroring `ClauseAnalysis` rather than
+inventing five parallel ground-truth shapes. `known_gap: bool` was added as
+a Phase-6-specific field (not part of `ClauseAnalysis`) to distinguish "the
+current pipeline already doesn't reach this gold label, and here's why" from
+an unexplained benchmark failure — see P6.6.
+
+**Smallest-safe rationale:** Reduces annotation duplication (one clause
+written once, evaluated across five dimensions) and keeps every dataset
+module's structure predictable.
+
+## P6.3 DEV/TEST/ADVERSARIAL split semantics, and an explicit "not truly blind" caveat
+
+**Location:** `corpus/eval/datasets/__init__.py`,
+`corpus/eval/datasets/risk_test_holdout.py`
+
+**What v2 says:** Phase 6 spec §1: "Keep TRAIN/TUNING, DEVELOPMENT, HELD-OUT
+TEST conceptually separate even if the current dataset is small... Do not
+mix tuning and final evaluation examples." Also: "Do not fabricate benchmark
+quality."
+
+**Decision:** Three non-overlapping `DatasetSplit` values (`DEV`, `TEST`,
+`ADVERSARIAL`). `TEST`-split content (`risk_test_holdout.py`,
+TEST-labeled cases in `entity_ground_truth.py`/`condition_ground_truth.py`)
+is never imported by `run_threshold_tuning.py` or `run_ablation.py`.
+Explicitly documented as **not a genuinely blind held-out set** in the
+strict sense: the same author tuned `risk_engine_v1` (Phase 5) and wrote
+these TEST cases afterward, so unconscious bias toward cases the engine
+happens to handle cannot be ruled out. This is disclosed rather than
+implied away, per the phase's explicit instruction not to fabricate
+benchmark quality.
+
+**If a real benchmark is supplied:** `Dataset_and_Evaluation_Spec.md` §4's
+real-world, independently-annotated, inter-annotator-agreement-checked
+benchmark would replace `risk_test_holdout.py` as the TEST split; the
+`DatasetSplit` enum and every script's split-handling logic need no change.
+
+## P6.4 Isotonic calibration via a from-scratch PAV implementation, not scikit-learn
+
+**Location:** `corpus/eval/metrics/calibration_metrics.py::fit_isotonic_calibration`
+
+**What v2 says:** `Dataset_and_Evaluation_Spec.md` §6 specifies isotonic
+regression as a calibration method. Phase 6 spec §11: "Do NOT add a complex
+ML model unnecessarily."
+
+**What's missing:** `scikit-learn` (which ships `IsotonicRegression`) is
+installed in this environment only transitively (via `sentence-transformers`
+or `chromadb`) — it is **not** a line in `backend/requirements.txt`.
+
+**Decision:** Implemented pool-adjacent-violators (PAV) — the standard
+algorithm isotonic regression is defined by — from scratch in ~40 lines,
+rather than adding a direct dependency on an already-transitively-present
+but undeclared package. Verified against hand-computed known-answer cases
+(`test_eval_metrics.py::TestIsotonicCalibration`) including a classic
+monotonicity-violation pooling case.
+
+**If a heavier calibration method is later justified** (e.g., Platt scaling
+requires a real optimization, not just sorting/averaging): add
+`scikit-learn` to `requirements.txt` explicitly at that point, with the
+justification recorded, rather than relying on it being present by accident.
+
+## P6.5 `run_all.py`: hard safety gates vs. provisional accuracy warnings
+
+**Location:** `corpus/eval/run_all.py`
+
+**What v2 says:** Phase 6 spec §16 says both "If a metric falls below a
+configured acceptance threshold: return non-zero exit code" **and** "If
+thresholds are not yet scientifically justified: mark them as provisional
+and use them only as development warnings" — two instructions that are in
+tension for a benchmark this small (12-15 cases per split).
+
+**Decision:** Split into two tiers. **Hard gates** (fail the run,
+non-negotiable regardless of sample size): zero fabrication leaks in the
+evidence-integrity probes; every HIGH/MEDIUM result carries verified
+evidence; the DEV split (the literal set `risk_engine_v1` was tuned
+against) does not regress below its established macro-F1 floor
+(`_DEV_MACRO_F1_FLOOR = 0.95`); the harness runs without an unhandled
+exception. These are safety/regression invariants, not accuracy claims, so
+they don't need a "statistically justified" threshold to be enforced.
+**Provisional warnings** (printed, exit-code-neutral): TEST-split accuracy,
+calibration ECE, segmentation/retrieval numbers — exactly the numbers this
+phase's benchmark is too small to justify gating on.
+
+**If a larger, real benchmark is supplied:** promote specific provisional
+warnings (e.g., TEST-split HIGH recall, calibration ECE) to hard gates with
+justified numeric floors once real accuracy targets exist
+(`Dataset_and_Evaluation_Spec.md` §8).
+
+## P6.6 Adversarial findings recorded as `known_gap`, not silently fixed
+
+**Location:** `corpus/eval/datasets/adversarial_risk_cases.py`,
+`corpus/eval/datasets/risk_test_holdout.py`,
+`corpus/eval/datasets/condition_ground_truth.py`,
+`corpus/eval/reports/error_analysis.py`
+
+Phase 6 spec header: "This phase is NOT about adding new product features"
+— and by extension, not about silently patching the Risk Engine (Phase 5)
+or the Phase 4 extractors either, even when testing surfaces a real,
+fixable-looking bug. Five real gaps were found and are recorded rather than
+patched (full detail in `corpus/eval/README.md` "What Phase 6 actually
+found" and each dataset module's docstring):
+
+1. Consequence-before-trigger phrasing ("X shall pay Y if Z") reads
+   `condition_completeness=partial`, not `full` — adversarial Case A scores
+   MEDIUM (0.69) instead of the spec's expected HIGH.
+2. "No X unless Y" (a conditional carve-out that re-establishes risk) reads
+   as flat negation — adversarial Case C scores LOW despite the spec
+   requiring "NOT globally LOW."
+3. `risk_rules._NEGATION_CUES` does not include "neither" — "neither party
+   waives" misclassifies as a positive rule hit.
+4. `condition_extraction_service._TRIGGER_MARKERS` does not recognize
+   "provided that," "subject to," or "notwithstanding."
+5. The five deterministic rules (Phase 5) and the empty reference corpus
+   together leave whole taxonomy categories (all `insurance` subcategories,
+   `interest_repayment/rate_change`, standalone rights waivers) with zero
+   detection coverage — surfaced by the TEST split's 0.50 HIGH-risk recall.
+
+**Decision:** every instance is tagged `known_gap=True` (schema field, P6.2)
+and cross-indexed in `error_analysis.KNOWN_FINDINGS` under
+`Dataset_and_Evaluation_Spec.md` §7's error taxonomy. `run_all.py`'s hard
+gates explicitly exclude these tagged cases from failing the run — a
+`known_gap` case never silently starts passing without someone updating the
+tag, and never blocks unrelated work either.
+
+**If/when these are fixed** (a future engine-change phase): flip the
+relevant `known_gap` flags to `False` and tighten the case's `strict`/
+`expected_levels` assertions; `run_risk_engine_eval.py`'s "GAP" markers and
+`run_all.py`'s adversarial summary will then correctly start treating a
+regression on that case as a hard failure.
+
+## P6.7 Evaluation-run outputs are gitignored, not committed
+
+**Location:** `.gitignore` (`/corpus/eval/results/*.json`),
+`corpus/eval/versioning.py`
+
+**What v2 says:** Phase 6 spec §17: "Do not overwrite previous evaluation
+results. Create timestamped/versioned output."
+
+**Decision:** `timestamped_output_path()` names every run's JSON report
+`{name}_{commit_short_sha}_{timestamp}.json` under `corpus/eval/results/`,
+which is gitignored (with a tracked `.gitkeep` placeholder so the directory
+itself exists in a fresh checkout). "Never overwrite" is satisfied by
+construction (each run's filename is unique), and "don't commit one file
+per CI run" (`Security_and_Privacy_v2.md` §9's general "do not
+over-engineer"/repo-hygiene posture) is satisfied by not tracking the
+directory's contents at all — a run's report is regenerable at any time by
+re-running the corresponding script against that commit.
