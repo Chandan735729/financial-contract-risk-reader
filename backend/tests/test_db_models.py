@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session
 
 from app.models import db_models
@@ -23,6 +23,7 @@ def test_document_uuid_pk_round_trips_as_uuid(db_session: Session):
     db_session.refresh(doc)
 
     fetched = db_session.get(db_models.Document, doc.id)
+    assert fetched is not None
     assert isinstance(fetched.id, uuid.UUID)
     assert fetched.id == doc.id
 
@@ -194,6 +195,17 @@ def test_deleting_document_cascades_processing_jobs(db_session: Session):
     db_session.commit()
 
     assert db_session.get(db_models.ProcessingJob, job_id) is None
+
+
+def test_invalid_enum_value_rejected_at_db_layer(db_session: Session):
+    # `_enum_column` uses `validate_strings=True` (db_models.py) precisely so
+    # a bad string can't silently reach the database as a `document_type` —
+    # this exercises that guard, not just the Python Enum constructor.
+    doc = make_document(document_type="not_a_real_document_type")
+    db_session.add(doc)
+    with pytest.raises(StatementError, match="not among the defined enum values"):
+        db_session.commit()
+    db_session.rollback()
 
 
 def test_user_deletion_sets_document_user_id_null(db_session: Session):

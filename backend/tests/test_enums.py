@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.models.enums import (
     ConfidenceLevel,
     DocumentType,
@@ -74,3 +76,20 @@ def test_enums_are_json_serializable_as_plain_strings():
     # as `RiskLevel.HIGH` — required for clean JSON API payloads.
     assert json.dumps(RiskLevel.HIGH) == '"HIGH"'
     assert json.dumps(DocumentType.LOAN) == '"loan"'
+
+
+def test_invalid_risk_level_value_rejected():
+    with pytest.raises(ValueError):
+        RiskLevel("not_a_real_level")
+
+
+def test_invalid_risk_category_value_rejected():
+    with pytest.raises(ValueError):
+        RiskCategory("not_a_real_category")
+
+
+def test_enum_values_are_case_sensitive():
+    # "high" must not silently coerce to RiskLevel.HIGH — case is part of
+    # the canonical value, not a formatting detail (API_and_Data_Models.md SS1).
+    with pytest.raises(ValueError):
+        RiskLevel("high")

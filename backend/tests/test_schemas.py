@@ -181,3 +181,18 @@ def test_risk_score_bounds_enforced():
         ClauseAnalysis(**_base_kwargs(risk_score=1.5))
     with pytest.raises(ValidationError):
         ClauseAnalysis(**_base_kwargs(confidence_score=-0.1))
+
+
+def test_invalid_risk_level_value_rejected():
+    with pytest.raises(ValidationError):
+        ClauseAnalysis(**_base_kwargs(risk_level="not_a_real_level"))
+
+
+def test_invalid_confidence_level_value_rejected():
+    with pytest.raises(ValidationError):
+        ClauseAnalysis(**_base_kwargs(confidence_level="not_a_real_level"))
+
+
+def test_invalid_document_type_value_rejected():
+    with pytest.raises(ValidationError):
+        ClauseAnalysis(**_base_kwargs(document_type="mortgage"))

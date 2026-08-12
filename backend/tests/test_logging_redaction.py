@@ -99,9 +99,13 @@ def test_log_event_end_to_end_never_emits_sensitive_text(caplog: pytest.LogCaptu
 
     record = caplog.records[0]
     assert SENSITIVE_CONTRACT_TEXT not in record.getMessage()
-    assert record.fields["raw_text"] == REDACTED_DISALLOWED
-    assert record.fields["explanation"] == REDACTED_DISALLOWED
-    assert record.fields["risk_level"] == "HIGH"
+    # `fields` is attached dynamically via `extra={"fields": ...}` in
+    # log_event, not a stdlib LogRecord attribute — getattr() reads it
+    # without asserting a static type stdlib doesn't declare.
+    logged_fields = getattr(record, "fields")  # noqa: B009
+    assert logged_fields["raw_text"] == REDACTED_DISALLOWED
+    assert logged_fields["explanation"] == REDACTED_DISALLOWED
+    assert logged_fields["risk_level"] == "HIGH"
 
     formatted = _JsonFormatter().format(record)
     assert SENSITIVE_CONTRACT_TEXT not in formatted

@@ -61,5 +61,14 @@ def test_migration_upgrade_creates_all_tables_and_downgrade_removes_them(tmp_pat
     downgrade = _run_alembic("downgrade", "base", env=env)
     assert downgrade.returncode == 0, downgrade.stderr
 
-    tables_after = _table_names(db_path)
-    assert tables_after.isdisjoint(EXPECTED_TABLES)
+    tables_after_downgrade = _table_names(db_path)
+    assert tables_after_downgrade.isdisjoint(EXPECTED_TABLES)
+
+    # Re-upgrade to confirm the migration is deterministic and repeatable,
+    # not just a one-shot script that happens to work once
+    # (Implementation_Roadmap.md Phase 0 acceptance: upgrade -> downgrade -> upgrade again).
+    re_upgrade = _run_alembic("upgrade", "head", env=env)
+    assert re_upgrade.returncode == 0, re_upgrade.stderr
+
+    tables_after_re_upgrade = _table_names(db_path)
+    assert EXPECTED_TABLES.issubset(tables_after_re_upgrade)
