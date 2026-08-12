@@ -91,6 +91,40 @@ def make_clause_analysis(clause_id: uuid.UUID, **overrides) -> db_models.ClauseA
     return db_models.ClauseAnalysisORM(**defaults)
 
 
+def make_corpus_pattern(**overrides) -> db_models.CorpusPattern:
+    defaults = dict(
+        id=uuid.uuid4(),
+        pattern_text="Synthetic corpus pattern text for testing purposes only.",
+        taxonomy_version="taxonomy_v1",
+        corpus_version="corpus_v1",
+        is_negative_example=False,
+    )
+    defaults.update(overrides)
+    return db_models.CorpusPattern(**defaults)
+
+
+@pytest.fixture(scope="session")
+def embedding_service():
+    """Session-scoped — the sentence-transformers model is loaded once
+    (~seconds) and reused across every test that needs it, matching Phase 4
+    spec SS8/SS22 ("model loaded once ... no model loading on every
+    clause") applied to the test suite itself."""
+    from app.services.embedding_service import EmbeddingService
+
+    return EmbeddingService()
+
+
+@pytest.fixture()
+def vector_store():
+    """Fresh in-memory (non-persistent) Chroma client per test — collection
+    names are keyed by (taxonomy_version, corpus_version), so reusing one
+    client across tests using the same version strings would leak indexed
+    patterns between otherwise-independent tests."""
+    from app.services.retrieval.vector_store import ChromaVectorStore, create_client
+
+    return ChromaVectorStore(create_client(None))
+
+
 @pytest.fixture()
 def utcnow() -> datetime:
     return datetime.now(UTC)

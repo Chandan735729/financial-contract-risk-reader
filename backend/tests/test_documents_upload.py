@@ -52,14 +52,18 @@ class TestSuccessfulUpload:
 
     def test_successful_upload_creates_document_and_processing_job(self, make_client, db_session):
         client = make_client()
-        body = _upload(client, "contract.pdf", build_pdf(), "application/pdf").json()
+        # Built once and reused for both the upload and the size assertion —
+        # PyMuPDF embeds a creation timestamp, so two separate build_pdf()
+        # calls can differ by a byte if they straddle a second boundary.
+        pdf_bytes = build_pdf()
+        body = _upload(client, "contract.pdf", pdf_bytes, "application/pdf").json()
         document_id = uuid.UUID(body["document_id"])
 
         document = db_session.get(db_models.Document, document_id)
         assert document is not None
         assert document.access_token == body["access_token"]
         assert document.file_format == "pdf"
-        assert document.file_size_bytes == len(build_pdf())
+        assert document.file_size_bytes == len(pdf_bytes)
         assert document.page_count == 6
         assert document.document_type == db_models.DocumentType.UNKNOWN
         assert document.original_filename == "contract.pdf"

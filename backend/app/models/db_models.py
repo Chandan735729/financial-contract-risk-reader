@@ -289,6 +289,16 @@ class CorpusPattern(Base):
     annotator_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_negative_example: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # PROVISIONAL_V2: Dataset_and_Evaluation_Spec.md SS3 requires corpus
+    # versioning ("every labeled batch is tagged corpus_v1, corpus_v1.1...")
+    # and AI_Risk_Engine_Design.md SS2/SS7 requires every retrieval result to
+    # carry a corpus version and reject mismatches — but API_and_Data_Models.md
+    # SS2's `corpus_patterns` column list (extended from v1) never lists a
+    # corpus_version column. Added here as the smallest schema extension that
+    # makes the explicitly-required versioning check possible. See
+    # docs/PROVISIONAL_DECISIONS.md "Phase 4: corpus_version column".
+    corpus_version: Mapped[str] = mapped_column(String(32), nullable=False, default="corpus_v1")
+
     created_at: Mapped[datetime] = mapped_column(default=_utcnow, nullable=False)
 
     matched_patterns: Mapped[list[MatchedPattern]] = relationship(back_populates="corpus_pattern")

@@ -5,8 +5,8 @@ v2 document explicitly deferred to a "v1" / "original" document that does
 not exist anywhere in this repository (see `docs/IMPLEMENTATION_AUDIT.md`
 §3.1 for the full list of such references), plus implementation choices
 (not v1-gaps) material enough to affect later phases. Phase 0/1 decisions
-are in the sections below; Phase 2 and Phase 3 decisions are in their own
-sections near the end of this file.
+are in the sections below; Phase 2, Phase 3, and Phase 4 decisions are in
+their own sections near the end of this file.
 
 Per the standing source-of-truth rule: these are the smallest reasonable,
 easy-to-change decisions — not reconstructions of remembered v1 content, not
@@ -512,3 +512,207 @@ does **not** fail the job (Phase 3 spec §9: "Do not fail an otherwise
 readable document merely because segmentation confidence is low") — it
 still advances to `UNDERSTANDING` with `low_confidence_flag=True` on its
 clauses, for later phases/UI to surface honestly.
+
+---
+
+# Phase 4 — Clause Understanding & Hybrid Retrieval
+
+## P4.1 Pending (unscored) `clause_analyses` row
+
+**Location:** `backend/app/services/clause_understanding_service.py::get_or_create_pending_analysis`
+
+**What v2 says:** `API_and_Data_Models.md` §2 makes `matched_patterns` and
+`financial_entities` children of `clause_analyses` (FK on
+`clause_analysis_id`), and `clause_analyses.risk_level`/`confidence_level`
+are `NOT NULL`. Phase 4 spec (header): "None of these three components may
+independently decide HIGH/MEDIUM/LOW/UNKNOWN. They produce evidence/signals.
+The Risk Engine decides later" (Phase 5).
+
+**What's missing:** v2 doesn't define an intermediate "signals collected,
+not yet scored" persisted state — only "clause" (pre-analysis) and
+"clause_analysis" (fully scored) exist as concepts.
+
+**Decision:** Phase 4 creates (or reuses) one `clause_analyses` row per
+clause in exactly the state Phase 0's own `ClauseAnalysis` Pydantic
+validator already requires `UNKNOWN` + `abstained=True` to travel together:
+`risk_level=UNKNOWN`, `risk_score=0.0`, `confidence_level=LOW`,
+`confidence_score=0.0`, `abstained=True`, `abstain_reason="Risk Engine has
+not yet scored this clause..."`, `model_version="unscored"`,
+`engine_version="unscored"`. `financial_entities`/`matched_patterns`
+attach to this row; `trigger`/`condition`/`consequence`/`affected_party`
+are set directly on it (per Phase 4 spec §21: "Condition data should be
+stored using the existing clause_analysis representation"). Phase 5 updates
+this same row in place — it is not a duplicate/parallel representation, and
+no new table was created (Phase 4 spec §21/§26).
+
+**Smallest-safe rationale:** Reuses an invariant Phase 0 already enforces
+(UNKNOWN requires abstained=True) rather than inventing a new status field
+or relaxing the `NOT NULL` constraints, which would have weakened a
+correctness guarantee `clause_analyses` consumers already rely on.
+
+**If v1 is supplied:** Only relevant if a v1 doc defines a different
+pending-row shape; the get-or-create lookup (`clause_id` → one active
+analysis) and the child-table wiring would be unaffected either way.
+
+## P4.2 `corpus_version` column on `corpus_patterns`
+
+**Location:** `backend/app/models/db_models.py::CorpusPattern.corpus_version`
+
+**What v2 says:** `Dataset_and_Evaluation_Spec.md` §3 requires corpus
+versioning ("every labeled batch is tagged `corpus_v1`, `corpus_v1.1`...");
+`AI_Risk_Engine_Design.md` §2/§7 requires every retrieval result to carry a
+corpus version and "reject mixing corpus/taxonomy versions." But
+`API_and_Data_Models.md` §2's `corpus_patterns` column list (extended from
+v1: `taxonomy_version`, `annotator_confidence`, `is_negative_example`) never
+lists a corpus_version column.
+
+**Decision:** Added `corpus_version: VARCHAR(32) NOT NULL, default
+"corpus_v1"` (migration `6e96f85aa20b`) — the smallest schema extension that
+makes the explicitly-required versioning check possible, following the same
+pattern as P2.2 (Phase 2's `documents` metadata columns).
+
+**Version-mismatch enforcement mechanism:** rather than loading the whole
+corpus and filtering, `_load_corpus_patterns` only ever queries rows
+matching *both* the caller's requested `taxonomy_version` and
+`corpus_version`; the vector store additionally uses one Chroma collection
+per `(taxonomy_version, corpus_version)` pair. A pattern under a different
+version is therefore never a candidate in the first place — "reject
+incompatible combinations" (Phase 4 spec §7) is satisfied by construction,
+not by a runtime exception. This is a documented design choice, not a
+v2-specified mechanism (v2 only states the requirement, not the
+implementation).
+
+## P4.3 Document-type filtering is a hard filter on known types, no filter on `unknown`
+
+**Location:** `backend/app/services/retrieval_service.py::is_category_applicable`,
+`RISK_CATEGORY_DOCUMENT_TYPE_APPLICABILITY`
+
+**What v2 says:** `Risk_Taxonomy_and_Labeling_Spec.md` §1 states each
+subcategory's applicable `document_type` (`loan`/`insurance`/`both`).
+`AI_Risk_Engine_Design.md` §3/§7 places the analogous `doc_type_relevance`
+gate at the *scoring* layer, as a multiplicative (soft) weight, not a hard
+retrieval-time exclusion. Phase 4 spec §5 separately asks retrieval itself
+to "support metadata filtering by document type."
+
+**Decision:** At the retrieval layer specifically, corpus patterns whose
+category is inapplicable to a *known* (`loan`/`insurance`) document type
+are excluded from candidacy entirely (a real, literal filter, per Phase 4
+spec §5's explicit ask); `document_type=unknown` applies no filtering
+at all, per that same section's explicit caution. This is a stricter,
+retrieval-layer application than `AI_Risk_Engine_Design.md`'s soft
+scoring-layer gate — the two are not in conflict (Phase 5's
+`doc_type_relevance` gate still applies on top, over whatever categories
+survive this filter), but v2 doesn't explicitly say retrieval-layer
+filtering should be hard vs. soft, so this is a documented interpretation.
+`RiskCategory.OTHER` (no stated `document_type` in the taxonomy — "reserved
+for genuinely novel risk patterns") and patterns with no assigned category
+are always treated as applicable (nothing to judge inapplicability
+against), never guessed at.
+
+**If v1 is supplied:** If a stricter/looser filtering policy is specified,
+only `RISK_CATEGORY_DOCUMENT_TYPE_APPLICABILITY` and
+`is_category_applicable`'s call site need to change.
+
+## P4.4 Embedding model, top-k, and floor thresholds
+
+**Location:** `backend/app/core/config.py`
+
+`AI_Risk_Engine_Design.md` §2 specifies "sentence-transformers" and
+"top-k=5" but not a specific model checkpoint or floor values ("a floor for
+candidate consideration, not a decision threshold" — value unspecified).
+Settings added: `embedding_model_name = "sentence-transformers/all-MiniLM-L6-v2"`
+(small, fast, standard choice for a laptop-buildable MVP — Phase 4 spec
+§8/§22), `retrieval_top_k = 5` (the one explicit v2 value),
+`retrieval_min_similarity_floor = 0.3`, `retrieval_min_lexical_floor = 0.1`
+(both empirically chosen during development against synthetic test
+queries, not calibrated against a labeled benchmark — same "documented
+heuristic, not calibrated" posture as Phase 3's segmentation confidence
+thresholds). All are named, versionable settings, never hardcoded at call
+sites (Phase 4 spec §4).
+
+## P4.5 Lexical score normalization: saturating transform, not per-query min-max
+
+**Location:** `backend/app/services/retrieval/lexical.py::_saturate`
+
+Not specified by v2 at all — BM25 raw scores are unbounded and v2 only says
+"lexical_score" without a normalization method. Min-max normalization
+against each query's own candidate set was implemented first and rejected
+after empirical testing: on a small corpus, whichever pattern scores
+highest is pushed to exactly 1.0 *regardless of true relevance* — a
+completely unrelated synthetic test query still produced a "1.0" top
+lexical score purely from BM25 IDF noise on a 5-pattern corpus. Replaced
+with a saturating transform `score / (score + K)`, `K=4.0` (chosen
+empirically: real near-exact-text overlap produces raw BM25 scores in the
+high single digits to tens; incidental token overlap on unrelated text
+stays in the low single digits, which the transform keeps well below
+typical floor thresholds). `K` is a documented heuristic constant, not a
+calibrated value — revisit once a real labeled benchmark exists
+(Dataset_and_Evaluation_Spec.md §4).
+
+## P4.6 Financial entity type disambiguation rules (percentage vs. rate, amount vs. fee)
+
+**Location:** `backend/app/services/entity_extraction_service.py`
+
+Phase 4 spec §9 lists `percentage | amount | fee | rate | time_period` as
+the minimum entity types but doesn't define the boundary between them.
+Decision (all deterministic, regex-adjacency based, never LLM-inferred):
+a percentage followed by a per-time qualifier ("per month", "p.a.",
+"annually", ...) is `rate`; a bare percentage is `percentage`. A currency
+amount is classified `fee` only when a fee-indicating word ("fee", "charge",
+"penalty", "surcharge") appears within a narrow (30-char) window around it,
+otherwise `amount`. The `fee` classification gets a lower
+`extraction_confidence` (0.7 vs. 1.0) than a plain pattern match, since it
+requires this extra contextual inference step (Phase 4 spec §11: extraction
+confidence must be honest about what was actually a plain deterministic
+match vs. an inferred one).
+
+## P4.7 Currency and number-format support scope
+
+**Location:** `backend/app/services/entity_extraction_service.py`
+
+Phase 4 spec §18 explicitly permits documenting unsupported cases rather
+than implementing them. Supported: `₹` / `Rs.` / `Rs` / `INR` / `$`
+currency amounts, with either Indian (`1,99,999`) or Western (`199,999`) or
+ungrouped (`1999.50`) digit grouping. **Not supported, by explicit
+decision:** other currency symbols (`€`, `£`, ...), word-form numbers
+("five hundred rupees", "ten thousand"). These simply produce no extracted
+entity rather than a wrong one — consistent with "do not invent" (Phase 4
+spec §9); no silent misparse.
+
+## P4.8 Condition extraction does not create `evidence_spans` rows (unlike entities)
+
+**Location:** `backend/app/services/condition_extraction_service.py`,
+`backend/app/services/entity_extraction_service.py::persist_entities`
+
+Phase 4 spec §14: "For entities and conditions, preserve: exact raw text,
+source location/offset where practical." `financial_entities` has a
+dedicated `evidence_span_id` FK explicitly designed for this — Phase 4
+creates an unverified (`verified=False`) `evidence_spans` row per extracted
+entity and links it. `clause_analyses.trigger/condition/consequence` have
+no analogous per-field offset column in the v2 schema at all — there is
+nowhere to attach an evidence span even if one were created. Decision:
+condition extraction preserves exact substrings of `clause.raw_text`
+within the `trigger`/`condition`/`consequence`/`affected_party` text
+fields themselves (so they remain independently locatable by string search
+against `raw_text`, satisfying "where practical") but does **not** create
+synthetic `evidence_spans` rows for them — there's no schema field to link
+them to, and inventing one would be exactly the "unsupported evidence
+span" / new-table pattern Phase 4 spec §14/§21 warns against.
+
+## P4.9 Retrieval and entity/condition evaluation are synthetic-only
+
+**Location:** `backend/tests/fixtures/retrieval_benchmark.py`,
+`backend/tests/fixtures/segmentation_benchmark.py` (Phase 3 precedent),
+`corpus/eval/run_retrieval_eval.py`
+
+Same posture as Phase 3's segmentation benchmark (P3.6):
+`Dataset_and_Evaluation_Spec.md` §4's real-world benchmark (independently
+annotated real documents, inter-annotator agreement) does not exist yet —
+building it requires real permission-cleared source documents and human
+annotation outside this phase's scope. The ten-pattern/ten-query synthetic
+retrieval benchmark here is hand-authored and clean-by-construction, useful
+for proving the Recall@k/MRR harness computes correctly and catching
+regressions in the hybrid retrieval implementation, not for claiming
+production accuracy. The measured numbers (Recall@1=0.90, Recall@3=1.00,
+Recall@5=1.00, MRR=0.95 on this synthetic set — see the Phase 4 completion
+report) are reported with that caveat attached everywhere they appear.

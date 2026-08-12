@@ -70,3 +70,19 @@ def test_settings_repr_masks_secrets():
     settings = Settings(anthropic_api_key="sk-ant-shouldnotappear")
     assert "sk-ant-shouldnotappear" not in repr(settings)
     assert "sk-ant-shouldnotappear" not in str(settings)
+
+
+def test_retrieval_settings_have_sane_defaults():
+    settings = Settings()
+    assert settings.retrieval_top_k == 5  # AI_Risk_Engine_Design.md SS2 "top-k=5"
+    assert settings.embedding_model_name
+    assert 0.0 <= settings.retrieval_min_similarity_floor <= 1.0
+    assert 0.0 <= settings.retrieval_min_lexical_floor <= 1.0
+    assert settings.taxonomy_version == "taxonomy_v1"
+    assert settings.corpus_version
+
+
+def test_retrieval_settings_are_overridable():
+    settings = Settings(retrieval_top_k=3, taxonomy_version="taxonomy_v2")
+    assert settings.retrieval_top_k == 3
+    assert settings.taxonomy_version == "taxonomy_v2"

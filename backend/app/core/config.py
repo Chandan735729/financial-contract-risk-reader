@@ -71,6 +71,32 @@ class Settings(BaseSettings):
     # Never served directly or exposed via any API response.
     upload_dir: str = "./data/uploads"
 
+    # Clause Understanding / Retrieval (Phase 4 — AI_Risk_Engine_Design.md SS2).
+    # sentence-transformers model — runs locally, no external API call, no
+    # fine-tuning (Phase 4 spec SS8/SS10). "all-MiniLM-L6-v2" is the standard
+    # small/fast choice for a laptop-buildable MVP.
+    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # AI_Risk_Engine_Design.md SS2: "top-k=5" — a named, versionable setting,
+    # never hardcoded at call sites (Phase 4 spec SS4).
+    retrieval_top_k: int = 5
+    # Below this raw cosine similarity / BM25 score, a candidate is not even
+    # considered — "a floor for candidate consideration, not a decision
+    # threshold" (AI_Risk_Engine_Design.md SS2).
+    retrieval_min_similarity_floor: float = 0.3
+    retrieval_min_lexical_floor: float = 0.1
+    # The taxonomy/corpus version this running system expects to score
+    # against — retrieval only ever considers corpus_patterns matching both
+    # (AI_Risk_Engine_Design.md SS2 "Corpus versioning"; SS7 "Corpus/taxonomy
+    # version mismatch ... halts scoring"). See Risk_Taxonomy_and_Labeling_Spec.md.
+    taxonomy_version: str = "taxonomy_v1"
+    corpus_version: str = "corpus_v1"
+    # Local persistence directory for the Chroma vector store — same
+    # local-filesystem-MVP precedent as `upload_dir` (PROVISIONAL_DECISIONS.md
+    # "Phase 2: uploaded document storage strategy"). Never holds per-user
+    # document embeddings, only the permanent labeled corpus
+    # (Technical_Architecture_v2.md SS6).
+    chroma_persist_dir: str = "./data/chroma"
+
     @field_validator("log_level")
     @classmethod
     def _validate_log_level(cls, value: str) -> str:

@@ -28,3 +28,9 @@ exclude = ["alembic/versions"]
 module = "tests.*"
 disallow_untyped_defs = false
 check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# rank_bm25 ships no type stubs / py.typed marker — a real, small,
+# well-maintained package (Phase 4 spec SS2), just untyped upstream.
+module = "rank_bm25"
+ignore_missing_imports = true
