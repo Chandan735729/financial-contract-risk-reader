@@ -103,6 +103,16 @@ class Document(Base):
     original_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
     storage_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Phase 2 upload/parsing metadata — not part of API_and_Data_Models.md SS2's
+    # explicit `documents` additions (only document_type/document_type_confidence
+    # are listed there); added because Phase 2 requires persisting safe
+    # upload-time metadata somewhere. Plain string, not a shared canonical enum
+    # (same precedent as FinancialEntity.entity_type) — see PROVISIONAL_DECISIONS.md.
+    file_format: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    file_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # PDF only — DOCX has no native page concept (see PROVISIONAL_DECISIONS.md).
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     document_type: Mapped[DocumentType] = mapped_column(
         _enum_column(DocumentType), nullable=False, default=DocumentType.UNKNOWN
     )

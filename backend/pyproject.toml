@@ -11,10 +11,10 @@ ignore = ["E501"]
 known-first-party = ["app", "tests"]
 
 [tool.ruff.lint.flake8-bugbear]
-# FastAPI's Depends()/Query()/etc. in argument defaults is the framework's
-# idiomatic dependency-injection pattern, not the mutable-default footgun
-# B008 exists to catch.
-extend-immutable-calls = ["fastapi.Depends", "fastapi.params.Depends"]
+# FastAPI's Depends()/File()/Query()/etc. in argument defaults is the
+# framework's idiomatic dependency-injection pattern, not the
+# mutable-default footgun B008 exists to catch.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.params.Depends", "fastapi.File", "fastapi.params.File"]
 
 [tool.mypy]
 python_version = "3.11"

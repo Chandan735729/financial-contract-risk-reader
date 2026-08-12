@@ -34,3 +34,11 @@ export interface HealthResponse {
   status: "ok";
   environment: string;
 }
+
+/** `POST /documents` response (API_and_Data_Models.md §3, Phase 2). No
+ * filesystem path, storage key, or parsed content is ever included — see
+ * backend/app/models/schemas.py::DocumentUploadResponse. */
+export interface DocumentUploadResponse {
+  document_id: string;
+  access_token: string;
+}

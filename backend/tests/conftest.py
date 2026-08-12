@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
@@ -19,8 +21,11 @@ os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 from app.core.config import Settings  # noqa: E402
+from app.core.config import get_settings as real_get_settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import create_db_engine, create_session_factory  # noqa: E402
+from app.db.session import get_db as real_get_db  # noqa: E402
+from app.main import app  # noqa: E402
 from app.models import db_models  # noqa: E402,F401
 
 
@@ -89,3 +94,36 @@ def make_clause_analysis(clause_id: uuid.UUID, **overrides) -> db_models.ClauseA
 @pytest.fixture()
 def utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+@pytest.fixture()
+def make_client(db_session: Session, tmp_path) -> Iterator[Callable[..., TestClient]]:
+    """Factory fixture for a `TestClient` wired to the real app with the DB
+    dependency overridden to the test's in-memory session and the settings
+    dependency overridden to an isolated `tmp_path` upload directory.
+
+    Each call accepts `Settings` field overrides (e.g. `max_pdf_pages=1`) so
+    individual tests can exercise limits without a shared global config.
+    """
+
+    def make(**settings_overrides: Any) -> TestClient:
+        settings = Settings(
+            environment="test",
+            database_url="sqlite:///:memory:",
+            upload_dir=str(tmp_path / "uploads"),
+            **settings_overrides,
+        )
+
+        def override_get_db() -> Iterator[Session]:
+            yield db_session
+            db_session.commit()
+
+        def override_get_settings() -> Settings:
+            return settings
+
+        app.dependency_overrides[real_get_db] = override_get_db
+        app.dependency_overrides[real_get_settings] = override_get_settings
+        return TestClient(app)
+
+    yield make
+    app.dependency_overrides.clear()

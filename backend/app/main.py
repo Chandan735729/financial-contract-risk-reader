@@ -1,8 +1,9 @@
-"""FastAPI application entrypoint — Phase 0 foundation only.
+"""FastAPI application entrypoint.
 
-No document/report/pipeline endpoints exist yet (those are later phases per
-Implementation_Roadmap.md). This wires up configuration, safe structured
-logging, CORS, uniform error responses, and the health check.
+Wires up configuration, safe structured logging, CORS, uniform error
+responses, the health check, and document upload/ingestion (Phase 2). No
+report/pipeline endpoints exist yet (those are later phases per
+Implementation_Roadmap.md).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.documents import router as documents_router
 from app.api.health import router as health_router
 from app.core.config import get_settings
 from app.core.errors import install_exception_handlers
@@ -31,7 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Financial Contract Risk Reader API", version="0.0.0-phase0", lifespan=lifespan)
+app = FastAPI(title="Financial Contract Risk Reader API", version="0.2.0-phase2", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,3 +56,4 @@ async def assign_request_id(request: Request, call_next):
 
 
 app.include_router(health_router)
+app.include_router(documents_router)

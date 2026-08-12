@@ -50,6 +50,27 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # Upload / parsing limits (Phase 2 — Security_and_Privacy_v2.md SS1 "Resource
+    # exhaustion / cost abuse", SS8 abuse protection). Deliberately conservative
+    # defaults for a laptop-buildable MVP; tunable per deployment via env vars.
+    max_upload_size_bytes: int = 20 * 1024 * 1024  # 20 MB
+    max_pdf_pages: int = 200
+    # DOCX has no native "page" concept (rendering-dependent) — paragraph count
+    # is the practical proxy cap for this file format. See PROVISIONAL_DECISIONS.md.
+    max_docx_paragraphs: int = 5000
+    # Below this total extracted character count, a parse is treated as
+    # LOW_TEXT_CONTENT regardless of page/paragraph count (empty or near-empty).
+    min_text_chars: int = 200
+    # Below this average characters-per-page, a multi-page parse is treated as
+    # LOW_TEXT_CONTENT even if the absolute total clears `min_text_chars` —
+    # catches scanned/image-only PDFs with a few OCR-stray characters per page.
+    min_avg_chars_per_page: float = 20.0
+
+    # Local-filesystem MVP storage root for uploaded originals — see
+    # PROVISIONAL_DECISIONS.md "Phase 2: uploaded document storage strategy".
+    # Never served directly or exposed via any API response.
+    upload_dir: str = "./data/uploads"
+
     @field_validator("log_level")
     @classmethod
     def _validate_log_level(cls, value: str) -> str:

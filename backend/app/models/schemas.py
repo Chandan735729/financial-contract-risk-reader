@@ -132,3 +132,12 @@ class ClauseAnalysis(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     environment: str
+
+
+class DocumentUploadResponse(BaseModel):
+    """`POST /documents` response (API_and_Data_Models.md SS3) — deliberately
+    just these two fields. No filesystem path, storage key, or parsed
+    content ever appears in an API response (Phase 2 spec SS1)."""
+
+    document_id: uuid.UUID
+    access_token: str

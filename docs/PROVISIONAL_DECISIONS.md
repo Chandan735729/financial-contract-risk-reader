@@ -1,9 +1,12 @@
-# Provisional Decisions — Phase 0
+# Provisional Decisions
 
-This document records every decision made during Phase 0 implementation
-because a v2 document explicitly deferred to a "v1" / "original" document
-that does not exist anywhere in this repository (see
-`docs/IMPLEMENTATION_AUDIT.md` §3.1 for the full list of such references).
+This document records every decision made during implementation because a
+v2 document explicitly deferred to a "v1" / "original" document that does
+not exist anywhere in this repository (see `docs/IMPLEMENTATION_AUDIT.md`
+§3.1 for the full list of such references), plus implementation choices
+(not v1-gaps) material enough to affect later phases. Phase 0/1 decisions
+are in the sections below; Phase 2 decisions are in their own section near
+the end of this file.
 
 Per the standing source-of-truth rule: these are the smallest reasonable,
 easy-to-change decisions — not reconstructions of remembered v1 content, not
@@ -87,12 +90,13 @@ per-document access token" for no-login core use.
 are not specified anywhere accessible.
 
 **Provisional decision:** The column is a unique, indexed `VARCHAR(64)`.
-Phase 0 does not yet generate tokens in application code (no
-document-creation endpoint exists yet); tests populate it with
-`uuid.uuid4().hex` (32 hex chars) as a placeholder value that fits the
-column. The actual generation call site (when the upload endpoint is built)
-should use a cryptographically secure random source sized for the full
-64-character column (e.g. `secrets.token_urlsafe`), not UUID hex.
+Phase 0 did not yet generate tokens in application code (no upload endpoint
+existed yet); tests populated it with `uuid.uuid4().hex` (32 hex chars) as a
+placeholder. **Update (Phase 2):** the real generation call site now exists
+— `backend/app/api/documents.py::upload_document` uses
+`secrets.token_urlsafe(48)`, which produces exactly 64 URL-safe base64
+characters (48 bytes → 64 chars with no padding), filling the column exactly
+with a cryptographically secure value.
 
 **Smallest-safe rationale:** Reserves enough column width for a
 high-entropy token without committing to an algorithm this phase has no
@@ -195,3 +199,147 @@ v1-gap decisions:
   defines `taxonomy_v1` as the current taxonomy version string. The schema
   does not hard-code this as a column default (callers must supply it
   explicitly); tests use the literal `"taxonomy_v1"` value from that spec.
+
+---
+
+# Phase 2 — Document Ingestion & Parsing
+
+## P2.1 Uploaded document storage strategy (local filesystem MVP)
+
+**Location:** `backend/app/services/storage.py`
+
+**What v2 says:** `Security_and_Privacy_v2.md` §2: "store originals in
+object storage separate from the database." `Technical_Architecture_v2.md`
+§10 says deployment is otherwise "unchanged from v1" (Next.js/Vercel,
+FastAPI+Postgres/Railway-Render) without naming a specific object-storage
+product, and §9's scalability notes are explicit that concurrency/queueing
+infrastructure is "not MVP-blocking."
+
+**What's missing:** Which object-storage backend (S3, GCS, a managed
+provider, or a local path) the "original Technical Architecture Document"
+assumed for the MVP.
+
+**Provisional decision:** Local filesystem storage under a configurable
+`UPLOAD_DIR` (default `./data/uploads`, gitignored). Files are written with
+a server-generated name (`{document_id}.{pdf|docx}`) via `save_document_file`
+— never a client-controlled path. The function signatures
+(`save_document_file` / `delete_document_file`, keyed by an opaque
+`storage_path` string) intentionally mirror what an S3/GCS-backed
+implementation would look like, so swapping the backend later means
+replacing the two functions' bodies, not the callers.
+
+**Smallest-safe rationale:** Satisfies "separate from the database" (the
+`documents` table only ever stores a reference string, never file bytes)
+without standing up cloud infrastructure this MVP phase doesn't need
+(`Security_and_Privacy_v2.md` §9 "Do-Not-Over-Engineer").
+
+**If v1 is supplied:** If the original document specifies a concrete
+provider, swap `storage.py`'s two functions for that provider's SDK calls;
+`storage_path` already stores an opaque reference rather than a raw
+filesystem path, minimizing the blast radius of the change.
+
+## P2.2 `documents` upload/parsing metadata columns
+
+**Location:** `backend/app/models/db_models.py::Document` —
+`file_format`, `file_size_bytes`, `page_count`
+
+**What v2 says:** `API_and_Data_Models.md` §2 lists only `document_type` /
+`document_type_confidence` as the explicit v2 additions to `documents`. It
+does not mention upload-time file metadata at all.
+
+**What's missing:** Nothing from v1 — this is not a v1-gap. The Phase 2
+task explicitly requires persisting "safe metadata available from the
+upload/parsing process: filename, file type, size, page count," which has
+nowhere to live in the v2-documented schema.
+
+**Decision:** Added three nullable columns to `documents`: `file_format`
+(plain `VARCHAR(8)`, values `"pdf"`/`"docx"` — not a shared canonical enum,
+same precedent as `FinancialEntity.entity_type`), `file_size_bytes`
+(`INTEGER`), `page_count` (`INTEGER`, PDF only — DOCX has no native page
+concept; see P2.4). No separate "parsing status" column was added —
+`processing_jobs.stage` / `.error_code` already cover that, and duplicating
+it would violate the "keep the schema minimal" instruction.
+
+**Migration:** `98eb6e641e38_add_upload_metadata_to_documents.py`.
+
+## P2.3 Canonical `ErrorCode` for a page/paragraph-count cap
+
+**Location:** `backend/app/services/parsing/models.py::ParseStatus.TOO_MANY_PAGES`
+
+**What v2 says:** `API_and_Data_Models.md` §1's `ErrorCode` enum has
+`FILE_TOO_LARGE` but no dedicated "too many pages" code, even though the
+Phase 2 task explicitly requires rejecting documents "exceeding configured
+page limits."
+
+**Decision:** A page/paragraph-count cap violation maps to
+`ErrorCode.FILE_TOO_LARGE` — treated as a resource/size constraint, which is
+what a page cap fundamentally is. No new `ErrorCode` member was invented.
+
+**If v1 is supplied** (or a later v2 revision adds a dedicated code): change
+one line — the `_FAILURE_STATUS_TO_ERROR_CODE` mapping in
+`app/services/parsing/models.py`.
+
+## P2.4 DOCX "page limit" interpreted as a paragraph/item-count cap
+
+**Location:** `backend/app/core/config.py::Settings.max_docx_paragraphs`;
+`backend/app/services/parsing/docx_parser.py`
+
+**What v2 says:** Phase 2 task SS2 requires rejecting "files exceeding
+configured page limits" without qualifying this per format.
+
+**What's missing:** DOCX (OOXML) has no stored page count at all — pagination
+is a rendering-time computation (font metrics, page size, margins), not a
+structural property of the file, unlike a PDF's fixed page objects.
+
+**Decision:** For DOCX, `max_docx_paragraphs` (default 5000) caps the total
+count of body-level items (paragraphs + table cells) as the practical proxy
+for "too large a document," reported through the same
+`ErrorCode.FILE_TOO_LARGE` path as a PDF page-count violation (P2.3).
+
+**If v1 is supplied:** If a literal DOCX page count is required, it would
+need a rendering step (e.g. converting to PDF first) — a materially bigger
+dependency this MVP phase does not take on.
+
+## P2.5 `ProcessingJob.stage` set to `SEGMENTING` after a successful Phase 2 parse
+
+**Location:** `backend/app/api/documents.py::upload_document`
+
+Parsing fully completes synchronously within the upload request (Phase 2
+does not run a background worker — consistent with
+`Technical_Architecture_v2.md` §9's "not MVP-blocking" queueing note). Since
+`ProcessingStage` represents the pipeline's current/next stage and
+segmentation (Phase 3) is what comes immediately after a completed parse,
+newly created jobs are stamped `SEGMENTING`, not `PARSING`. This is an
+operational default, not a v1-gap — easy to change (one enum value) once
+Phase 3 exists to actually consume `SEGMENTING`-stage jobs.
+
+## P2.6 Pre-approved user-facing error messages authored fresh
+
+**Location:** `backend/app/core/errors.py::_DEFAULT_MESSAGES`
+
+**What v2 says:** `API_and_Data_Models.md` §4: `user_message` should be
+"the exact pre-approved string from the Security & Access Document."
+
+**What's missing:** That document (already flagged missing in the Phase
+0/1 sections above). Phase 2 adds five new error codes
+(`FILE_TOO_LARGE`, `UNSUPPORTED_FILE_TYPE`, `CORRUPTED_FILE`,
+`PASSWORD_PROTECTED`, `LOW_TEXT_CONTENT`) that need a user-facing string.
+
+**Decision:** Short, plain, non-alarming strings were written fresh for
+each new code, consistent with the language-policy tone
+(`Security_and_Privacy_v2.md` §7) even though that policy targets clause-risk
+language specifically, not upload errors.
+
+**If v1 is supplied:** Replace the five new dictionary values with the
+pre-approved strings; no code structure change needed.
+
+## P2.7 HTTP status codes per `ErrorCode` (upload path)
+
+**Location:** `backend/app/api/documents.py::_STATUS_CODE_BY_ERROR_CODE`
+
+v2 defines the error *body* shape (`API_and_Data_Models.md` §4) but never
+specifies HTTP status codes per `ErrorCode`. Standard REST semantics were
+used: `413` for `FILE_TOO_LARGE`, `415` for `UNSUPPORTED_FILE_TYPE`, `422`
+for `CORRUPTED_FILE` / `PASSWORD_PROTECTED` / `LOW_TEXT_CONTENT` (all
+well-formed-request-but-semantically-invalid-content cases). Not a v1-gap —
+a REST-convention judgment call, isolated to one dict, trivial to change.
