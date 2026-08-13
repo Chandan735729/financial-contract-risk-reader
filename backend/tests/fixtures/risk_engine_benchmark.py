@@ -320,4 +320,19 @@ BENCHMARK_CASES: tuple[RiskBenchmarkCase, ...] = (
         gold_risk_level="UNKNOWN",
         document_type=DocumentType.INSURANCE,
     ),
+    # -- PHASE_6.6 severity ceiling (docs/PROVISIONAL_DECISIONS.md P6.10):
+    # auto_renewal's taxonomy band is flat MEDIUM — strong fee/surcharge/
+    # condition signal must not push it to HIGH. Without the ceiling
+    # mechanism this case scores 0.83/HIGH under the flat formula; verified
+    # against the actual (post-fix) engine output.
+    RiskBenchmarkCase(
+        name="auto_renewal_severity_ceiling_not_high",
+        text=(
+            "Should the policyholder fail to provide notice, this policy renews "
+            "automatically and a fee of Rs. 15,000 applies with 10% surcharge if unpaid."
+        ),
+        gold_risk_level="MEDIUM",
+        document_type=DocumentType.INSURANCE,
+        risk_category=RiskCategory.RENEWAL,
+    ),
 )

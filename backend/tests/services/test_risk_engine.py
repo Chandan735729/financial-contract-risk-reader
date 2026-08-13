@@ -14,6 +14,7 @@ from app.services.risk_engine import (
     EntitySignal,
     PatternSignal,
     apply_abstention_rules,
+    apply_severity_ceiling,
     category_doc_type_relevance,
     score_clause,
     score_conditions,
@@ -208,6 +209,78 @@ class TestSegmentationLowConfidenceAbstention:
         assert "segmentation" in result.abstain_reason.lower()
 
 
+class TestSeverityCeiling:
+    """PHASE_6.6 (docs/PROVISIONAL_DECISIONS.md P6.10): Risk_Taxonomy_and_Labeling_Spec.md
+    SS1 gives some subcategories a default severity band that tops out at
+    MEDIUM (never HIGH) — the flat scoring formula has no per-category
+    notion of that on its own, so a rule-matched subcategory's taxonomy
+    ceiling is applied as a post-threshold cap."""
+
+    def test_ceiling_lowers_a_level_that_exceeds_it(self):
+        assert apply_severity_ceiling(RiskLevel.HIGH, RiskLevel.MEDIUM) == RiskLevel.MEDIUM
+
+    def test_ceiling_is_a_noop_when_level_already_at_or_below_it(self):
+        assert apply_severity_ceiling(RiskLevel.MEDIUM, RiskLevel.MEDIUM) == RiskLevel.MEDIUM
+        assert apply_severity_ceiling(RiskLevel.LOW, RiskLevel.MEDIUM) == RiskLevel.LOW
+        assert apply_severity_ceiling(RiskLevel.UNKNOWN, RiskLevel.MEDIUM) == RiskLevel.UNKNOWN
+
+    def test_none_ceiling_is_a_noop(self):
+        assert apply_severity_ceiling(RiskLevel.HIGH, None) == RiskLevel.HIGH
+
+    def test_auto_renewal_strong_signal_is_capped_at_medium_not_high(self):
+        # Fee + surcharge + full condition chain would reach HIGH under the
+        # flat formula alone — auto_renewal's taxonomy band is flat MEDIUM.
+        result = _score(
+            "Should the policyholder fail to provide notice, this policy renews "
+            "automatically and a fee of Rs. 15,000 applies with 10% surcharge if unpaid.",
+            document_type=DocumentType.INSURANCE,
+        )
+        assert result.risk_level == RiskLevel.MEDIUM
+        assert result.risk_category == RiskCategory.RENEWAL
+        assert result.risk_subcategory == "auto_renewal"
+        # The displayed score must not contradict the capped level.
+        assert result.risk_score < DEFAULT_RISK_ENGINE_CONFIG.high_threshold
+
+    def test_uncapped_subcategory_can_still_reach_high(self):
+        # prepayment_penalty's band is HIGH-leaning — no ceiling applies.
+        result = _score(
+            "Borrower shall pay a prepayment penalty equal to 5% of the outstanding "
+            "principal if the loan is repaid in full within 24 months of disbursement."
+        )
+        assert result.risk_level == RiskLevel.HIGH
+
+
+class TestSignalTypeCoverage:
+    """PHASE_6.6 SS18: rule-only, entity-only, and amount-magnitude
+    contrast cases — distinct from the negation/rule-pairing tests
+    elsewhere, these isolate a single signal type at a time."""
+
+    def test_rule_only_no_entity_no_condition_does_not_overclaim(self):
+        # A standalone waiver with no financial entity and no conditional
+        # connective — the rule fires, but with no corroborating signal the
+        # engine must not assert a confident risk level (see
+        # docs/SEVERITY_CALIBRATION_NOTES.md "rule-only risk").
+        result = _score("The Borrower waives any right to a jury trial in connection with this agreement.")
+        assert result.risk_level != RiskLevel.HIGH
+
+    def test_entity_only_no_rule_match_does_not_force_a_risk_level(self):
+        # "2%" is a real, extracted entity, but no deterministic rule
+        # pattern matches this phrasing at all — entity presence alone must
+        # not manufacture a confident risk level (Product Principle 3).
+        result = _score("The processing fee is 2% of the loan amount.")
+        assert result.risk_level != RiskLevel.HIGH
+        assert result.risk_level != RiskLevel.MEDIUM
+
+    def test_strong_amount_scores_at_least_as_high_as_weak_amount(self):
+        weak = _score("Borrower shall pay a prepayment penalty if the loan is repaid early.")
+        strong = _score(
+            "Borrower shall pay a prepayment penalty equal to 25% of principal "
+            "if the loan is repaid early."
+        )
+        assert strong.risk_score >= weak.risk_score
+        assert strong.signals.entity_strength >= weak.signals.entity_strength
+
+
 class TestConfidenceIndependence:
     """Phase 5 spec SS23 — confidence is not risk severity."""
 
@@ -220,6 +293,28 @@ class TestConfidenceIndependence:
         assert result.risk_level == RiskLevel.HIGH
         # Confidence is computed independently and need not also be HIGH.
         assert result.confidence_level in (ConfidenceLevel.LOW, ConfidenceLevel.MEDIUM, ConfidenceLevel.HIGH)
+
+    def test_high_risk_with_low_confidence_is_a_reachable_combination(self):
+        # PHASE_6.6 (PRD_v2.md Product Principle 9): "HIGH RISK, confidence
+        # 40%" must be a genuinely reachable output, not merely a type-level
+        # possibility. Rule + entity alone (no retrieval margin, no
+        # condition chain, weak signal agreement) reaches HIGH on raw score
+        # while confidence stays low.
+        result = _score("Prepayment penalty of 25% applies. Prepayment charges of 30% apply too.")
+        assert result.risk_level == RiskLevel.HIGH
+        assert result.confidence_level in (ConfidenceLevel.LOW, ConfidenceLevel.MEDIUM)
+
+    def test_medium_risk_with_high_confidence_is_a_reachable_combination(self):
+        result = _score(
+            "In case of late payment, acceleration of the entire outstanding balance shall apply immediately.",
+            matched_patterns=[
+                _pattern(
+                    similarity=0.85, lexical=0.6, category=RiskCategory.DEFAULT, subcategory="acceleration"
+                )
+            ],
+        )
+        assert result.risk_level == RiskLevel.MEDIUM
+        assert result.confidence_score > 0.5
 
     def test_low_risk_can_have_higher_confidence_than_a_weaker_case(self):
         strong_negation = _score(

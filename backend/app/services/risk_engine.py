@@ -27,7 +27,7 @@ from app.models.enums import ConfidenceLevel, DocumentType, RiskCategory, RiskLe
 from app.services.evidence_engine import EvidenceResult, assemble_and_verify_evidence
 from app.services.retrieval_service import is_category_applicable
 from app.services.risk_engine_config import DEFAULT_RISK_ENGINE_CONFIG, RiskEngineConfig
-from app.services.risk_rules import RuleMatch, evaluate_rules
+from app.services.risk_rules import RuleMatch, evaluate_rules, subcategory_severity_ceiling
 
 ConditionCompletenessLabel = Literal["none", "partial", "full"]
 
@@ -316,6 +316,49 @@ def threshold_to_level(raw_score: float, config: RiskEngineConfig) -> RiskLevel:
     return RiskLevel.UNKNOWN
 
 
+_LEVEL_RANK: dict[RiskLevel, int] = {
+    RiskLevel.UNKNOWN: 0,
+    RiskLevel.LOW: 1,
+    RiskLevel.MEDIUM: 2,
+    RiskLevel.HIGH: 3,
+}
+
+
+def apply_severity_ceiling(level: RiskLevel, ceiling: RiskLevel | None) -> RiskLevel:
+    """PHASE_6.6 (docs/PROVISIONAL_DECISIONS.md P6.10): caps `level` at a
+    rule-matched subcategory's taxonomy-stated upper severity band
+    (`risk_rules.subcategory_severity_ceiling`) — e.g. `auto_renewal`'s
+    band never exceeds MEDIUM per Risk_Taxonomy_and_Labeling_Spec.md SS1.3,
+    but the flat scoring formula has no per-category notion of that on its
+    own. Only ever lowers `level`, never raises it — `ceiling=None` (a
+    subcategory whose band already permits HIGH, or no rule-matched
+    subcategory at all) is a no-op."""
+    if ceiling is None:
+        return level
+    if _LEVEL_RANK[level] > _LEVEL_RANK[ceiling]:
+        return ceiling
+    return level
+
+
+# The threshold a capped score must stay strictly under, so a displayed
+# score never contradicts a lower, ceiling-capped level (e.g. never show
+# "MEDIUM" next to a 0.83 score, which reads as HIGH to anyone who knows
+# the threshold).
+_CEILING_SCORE_BOUND: dict[RiskLevel, str] = {
+    RiskLevel.MEDIUM: "high_threshold",
+    RiskLevel.LOW: "medium_threshold",
+    RiskLevel.UNKNOWN: "low_threshold",
+}
+
+
+def _cap_score_for_ceiling(raw_score: float, ceiling_level: RiskLevel, config: RiskEngineConfig) -> float:
+    bound_attr = _CEILING_SCORE_BOUND.get(ceiling_level)
+    if bound_attr is None:
+        return raw_score
+    bound = getattr(config, bound_attr)
+    return min(raw_score, bound - 1e-6)
+
+
 # ==================================================================
 # Abstention (AI_Risk_Engine_Design.md SS6, Phase 5 spec SS11/SS17)
 # ==================================================================
@@ -522,6 +565,11 @@ def score_clause(
     verified_evidence_present = len(evidence.verified) > 0
 
     candidate_level = threshold_to_level(raw_score, config)
+    ceiling = subcategory_severity_ceiling(candidate_subcategory)
+    capped_level = apply_severity_ceiling(candidate_level, ceiling)
+    if capped_level != candidate_level:
+        raw_score = _cap_score_for_ceiling(raw_score, capped_level, config)
+    candidate_level = capped_level
     final_level, abstained, abstain_reason = apply_abstention_rules(
         candidate_level,
         confidence_score,

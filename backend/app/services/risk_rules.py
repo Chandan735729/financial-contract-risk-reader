@@ -29,6 +29,23 @@ exception. A pairing that is simple-negated *and* followed by an
 but distinct on `RuleMatch` for evidence/explanation. See P6.9 for why this
 was the smallest viable schema extension over inventing a larger structured
 "exception" shape.
+
+**Severity ceiling (PHASE_6.6, docs/PROVISIONAL_DECISIONS.md P6.10):**
+Risk_Taxonomy_and_Labeling_Spec.md SS1 gives each subcategory a *default
+severity band* — some subcategories are flat-MEDIUM or LOW–MEDIUM banded,
+never MEDIUM–HIGH or HIGH. The scoring formula in `risk_engine.py` has no
+notion of *which* category it's scoring — the same rule/entity/condition
+combination formula applies uniformly regardless of subcategory, so a
+flat-MEDIUM category with strong entity+condition signal can currently
+reach HIGH (empirically confirmed: a fee-heavy `auto_renewal_notice` match
+scores 0.83/HIGH even though `auto_renewal`'s taxonomy band tops out at
+MEDIUM). `severity_ceiling` on a rule caps the *final* level at the
+subcategory's taxonomy-stated upper band — applied post-threshold, so it
+only ever lowers an already-computed level, never raises one. This cannot
+introduce a false negative (a genuinely LOW/UNKNOWN case is unaffected) and
+cannot regress any currently-passing case (no currently-passing DEV/TEST/
+adversarial case is *correctly* HIGH for one of the ceiling-bearing
+subcategories — see P6.10 for the full verification).
 """
 
 from __future__ import annotations
@@ -37,7 +54,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from app.models.enums import RiskCategory
+from app.models.enums import RiskCategory, RiskLevel
 
 RULE_SET_VERSION = "risk_rules_v1"
 
@@ -101,6 +118,12 @@ class _RuleDefinition:
     # real-world instance of this exact MEDIUM-risk pattern to "confirmed
     # safe," which is backwards.
     negation_sensitive: bool = True
+    # PHASE_6.6 (docs/PROVISIONAL_DECISIONS.md P6.10): the subcategory's
+    # taxonomy-stated upper severity band (Risk_Taxonomy_and_Labeling_Spec.md
+    # SS1) — `None` for subcategories whose band already permits HIGH
+    # (no cap needed). Applied post-threshold in risk_engine.py; only ever
+    # lowers a computed level, never raises one.
+    severity_ceiling: RiskLevel | None = None
 
 
 # Phase 5 spec SS15's five named examples, in order.
@@ -147,6 +170,9 @@ _RULES: tuple[_RuleDefinition, ...] = (
         ),
         secondary=re.compile(r"\bnotice\b|\bcancel(?:s|led|ling|lation)?\b", re.IGNORECASE),
         negation_sensitive=False,
+        # PHASE_6.6: Risk_Taxonomy_and_Labeling_Spec.md SS1.3 `auto_renewal`
+        # default severity is flat "MEDIUM", never MEDIUM-HIGH or HIGH.
+        severity_ceiling=RiskLevel.MEDIUM,
     ),
     _RuleDefinition(
         rule_id="missed_payment_acceleration",
@@ -220,6 +246,9 @@ _RULES: tuple[_RuleDefinition, ...] = (
         secondary=re.compile(
             r"\bcoverage\b|\beffective\b|\bapplies\b|\bbegins?\b|\bcommences?\b", re.IGNORECASE
         ),
+        # PHASE_6.6: Risk_Taxonomy_and_Labeling_Spec.md SS1.5 `waiting_period`
+        # default severity is "LOW-MEDIUM", never HIGH.
+        severity_ceiling=RiskLevel.MEDIUM,
     ),
     _RuleDefinition(
         # Risk_Taxonomy_and_Labeling_Spec.md INSURANCE/deductible.
@@ -237,6 +266,9 @@ _RULES: tuple[_RuleDefinition, ...] = (
         secondary=re.compile(
             r"\bapplies\b|\bapplicable\b|\bpayable\b|\bamount\b|\bcover\w*\b|\bbefore\b", re.IGNORECASE
         ),
+        # PHASE_6.6: Risk_Taxonomy_and_Labeling_Spec.md SS1.5 `deductible`
+        # default severity is "LOW-MEDIUM", never HIGH.
+        severity_ceiling=RiskLevel.MEDIUM,
     ),
     _RuleDefinition(
         # Risk_Taxonomy_and_Labeling_Spec.md INTEREST_REPAYMENT/rate_change.
@@ -318,6 +350,9 @@ _RULES: tuple[_RuleDefinition, ...] = (
         risk_subcategory="renewal_fee",
         primary=re.compile(r"\brenewal\s+fee\b", re.IGNORECASE),
         secondary=re.compile(r"\bpayable\b|\bcharged\b|\bapplies\b|\bdue\b|\bamount\b", re.IGNORECASE),
+        # PHASE_6.6: Risk_Taxonomy_and_Labeling_Spec.md SS1.3 `renewal_fee`
+        # default severity is flat "MEDIUM", never HIGH.
+        severity_ceiling=RiskLevel.MEDIUM,
     ),
     _RuleDefinition(
         # Risk_Taxonomy_and_Labeling_Spec.md TERMINATION/unilateral_termination_right.
@@ -372,6 +407,24 @@ def _resolve_polarity(clause_text: str, span_start: int, span_end: int) -> Polar
     if _has_exception_marker(clause_text, span_end, exception_window_end):
         return "conditional"
     return "negative"
+
+
+# PHASE_6.6 (docs/PROVISIONAL_DECISIONS.md P6.10): built once from `_RULES`
+# rather than re-scanned per call — a subcategory maps to at most one rule
+# today, so this is a plain dict, not a multi-value structure.
+_SUBCATEGORY_SEVERITY_CEILING: dict[str, RiskLevel] = {
+    rule.risk_subcategory: rule.severity_ceiling for rule in _RULES if rule.severity_ceiling is not None
+}
+
+
+def subcategory_severity_ceiling(risk_subcategory: str | None) -> RiskLevel | None:
+    """The taxonomy-stated upper severity band for a rule-matched subcategory,
+    or `None` if that subcategory's band already permits HIGH (no ceiling to
+    enforce). `risk_engine.py` applies this as a post-threshold cap — see
+    module docstring "Severity ceiling"."""
+    if risk_subcategory is None:
+        return None
+    return _SUBCATEGORY_SEVERITY_CEILING.get(risk_subcategory)
 
 
 def evaluate_rules(clause_text: str) -> list[RuleMatch]:

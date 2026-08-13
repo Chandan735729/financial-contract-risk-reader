@@ -128,14 +128,22 @@ RISK_TEST_HOLDOUT: tuple[ClauseGroundTruth, ...] = (
         risk_subcategory="arbitration",
         risk_level=RiskLevel.MEDIUM,
         known_gap=True,
-        notes="STILL A GAP after Phase 6.5: this text has no if/when/unless-type connective at "
-        "all (it's an unconditional, mandatory arbitration clause, not a conditional one) so no "
-        "amount of condition-marker broadening helps. Rule fires alone (rule_boost=0.35, no "
-        "entity, no condition) -> raw_score=0.35 -> LOW band -> abstained to UNKNOWN because a "
-        "bare positive rule hit doesn't count as 'positive evidence for LOW'. The only lever "
-        "that would flip this is a weight/threshold change, which would be justified by nothing "
-        "but this one TEST case - deliberately not done (see corpus/eval/README.md and the "
-        "Phase 6.5 final report). Same structural pattern as "
+        notes="STILL A GAP after Phase 6.5 and 6.6: this text has no if/when/unless-type "
+        "connective at all (it's an unconditional, mandatory arbitration clause, not a "
+        "conditional one) so no amount of condition-marker broadening helps. Rule fires alone "
+        "(rule_boost=0.35, no entity, no condition) -> raw_score=0.35 -> LOW band -> abstained "
+        "to UNKNOWN because a bare positive rule hit doesn't count as 'positive evidence for "
+        "LOW'. PHASE_6.6 analysis: the gold MEDIUM label is well-justified (LOSS_OF_RIGHTS/"
+        "arbitration is MEDIUM-HIGH banded, and this clause is explicit/unambiguous, not vague "
+        "language needing inference) - the engine's UNKNOWN is arguably too conservative here, "
+        "since PRD_v2.md SS9 says UNKNOWN should correlate with genuine ambiguity, not just 'no "
+        "corroborating entity/condition happened to be present.' But raising a bare rule-only "
+        "match to a confident level risks false positives on rule matches over less-explicit "
+        "text elsewhere - a real fix needs a way to distinguish 'explicit complete clause' from "
+        "'weak/coincidental rule match', which the current architecture doesn't have and "
+        "shouldn't invent speculatively (see docs/SEVERITY_CALIBRATION_NOTES.md 'Unresolved "
+        "questions'). Not fixed here since the only lever available (a threshold/weight change) "
+        "would be justified by nothing but this TEST case. Same structural pattern as "
         "test_standalone_jury_waiver_no_rule_coverage below.",
     ),
     ClauseGroundTruth(
@@ -147,12 +155,19 @@ RISK_TEST_HOLDOUT: tuple[ClauseGroundTruth, ...] = (
         risk_subcategory="rate_change",
         risk_level=RiskLevel.MEDIUM,
         known_gap=True,
-        notes="PHASE_6.5 PARTIAL: a new interest_rate_change rule now covers this category and "
-        "fires correctly (no longer UNKNOWN) - the stated 'no rule coverage' problem is fixed. "
-        "But with the rule + a strong rate entity (3%, magnitude bonus) + a full condition "
-        "chain (consequence-before-trigger fix) all present, the formula now reaches HIGH "
-        "(0.76), one band above this file's MEDIUM gold label. Left as-is rather than "
-        "weight-tuned to force MEDIUM on this one TEST case - see Phase 6.5 final report.",
+        notes="SEVERITY_AMBIGUOUS (PHASE_6.6, docs/SEVERITY_CALIBRATION_NOTES.md): "
+        "Risk_Taxonomy_and_Labeling_Spec.md SS1.6 bands interest_repayment/rate_change as "
+        "'MEDIUM-HIGH' - a two-level-wide prior, not a single value. This file's MEDIUM gold "
+        "label and the engine's HIGH output are BOTH within that taxonomy-permitted band; "
+        "neither is 'demonstrably inconsistent with the documented taxonomy' (the bar for "
+        "changing a label per this phase's own instructions), so the label is left as MEDIUM "
+        "rather than flipped to match the engine. Phase 6.6 extensively verified (4 weight-"
+        "rebalancing hypotheses tested against the full 30-case DEV benchmark) that no "
+        "DEV-safe engine change resolves this - every hypothesis that pulled this case down to "
+        "MEDIUM also incorrectly pulled genuinely-HIGH DEV cases (clean prepayment/acceleration "
+        "examples with the identical rule+entity+condition signal shape) down to MEDIUM too. "
+        "This is a real within-band ambiguity requiring expert-annotated data to resolve, not "
+        "an engine bug - see docs/SEVERITY_CALIBRATION_NOTES.md 'Ambiguities discovered'.",
     ),
     ClauseGroundTruth(
         case_id="test_insurance_exclusion_no_rule_coverage",
@@ -183,12 +198,16 @@ RISK_TEST_HOLDOUT: tuple[ClauseGroundTruth, ...] = (
         risk_subcategory="deductible",
         risk_level=RiskLevel.LOW,
         known_gap=True,
-        notes="PHASE_6.5 PARTIAL: a new insurance_deductible rule now covers this category and "
-        "fires correctly (no longer UNKNOWN) - the stated 'no rule coverage' problem is fixed. "
-        "But rule + amount entity together reach MEDIUM (0.61), not this file's LOW gold label. "
-        "A deductible is itself a real out-of-pocket cost worth surfacing, so MEDIUM is at least "
-        "as taxonomically defensible as the original LOW guess (written when no rule existed at "
-        "all) - left as-is rather than weight-tuned to force a match. See Phase 6.5 final report.",
+        notes="SEVERITY_AMBIGUOUS (PHASE_6.6, docs/SEVERITY_CALIBRATION_NOTES.md): "
+        "Risk_Taxonomy_and_Labeling_Spec.md SS1.5 bands insurance/deductible as 'LOW-MEDIUM' - "
+        "this file's LOW gold label and the engine's MEDIUM output (0.61, capped consistent with "
+        "the new severity_ceiling mechanism, which still permits MEDIUM for this band) are BOTH "
+        "within that taxonomy-permitted band. A deductible is a genuine out-of-pocket cost, so "
+        "MEDIUM is not an unreasonable read; LOW (written when no rule existed for this category "
+        "at all, per Phase 6 pre-6.5) is also defensible for a routine, expected insurance term. "
+        "Left as MEDIUM-gold rather than flipped, per this phase's rule against changing a label "
+        "that isn't demonstrably inconsistent with the taxonomy - see "
+        "docs/SEVERITY_CALIBRATION_NOTES.md 'Ambiguities discovered'.",
     ),
     ClauseGroundTruth(
         case_id="test_standalone_jury_waiver_no_rule_coverage",

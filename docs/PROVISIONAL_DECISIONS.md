@@ -1249,3 +1249,56 @@ for `rule_hit`/`rule_boost`/`corroboration`/`compute_signal_agreement`/
 candidate-category selection (still risk-bearing) but never as
 `has_positive_low_evidence` (never confirmed-safe) — preserving the
 distinction on `RuleMatch` itself for evidence/explanation.
+
+## P6.10 Per-subcategory severity ceiling
+
+**Location:** `backend/app/services/risk_rules.py`
+(`_RuleDefinition.severity_ceiling`, `subcategory_severity_ceiling`),
+`backend/app/services/risk_engine.py` (`apply_severity_ceiling`,
+`_cap_score_for_ceiling`)
+
+**What Phase 6.6 found:** `Risk_Taxonomy_and_Labeling_Spec.md` §1 gives
+every subcategory a default severity *band* (some flat MEDIUM, some
+LOW–MEDIUM, some flat HIGH, some MEDIUM–HIGH), but the scoring formula
+(`AI_Risk_Engine_Design.md` §4) applies uniformly across every category with
+no notion of which band it's scoring against. Empirically confirmed
+reachable, not hypothetical: a fee/surcharge/condition-heavy
+`auto_renewal_notice` match scored 0.83/HIGH even though `auto_renewal`'s
+taxonomy band never exceeds MEDIUM. See
+`docs/SEVERITY_CALIBRATION_NOTES.md` §3.2 for the full writeup, including
+why a companion severity *floor* was deliberately not built this phase (a
+false floor-elevation is a materially worse mistake than a missing
+ceiling — it risks manufacturing a HIGH/MEDIUM claim without evidence).
+
+**Decision:** the smallest viable fix over a full reweighting of the
+scoring formula (which was tested via four separate hypotheses — see
+`docs/SEVERITY_CALIBRATION_NOTES.md` §4 — and rejected because every one
+broke multiple currently-correct DEV cases, including the taxonomy's own
+canonical worked example): add an optional `severity_ceiling: RiskLevel |
+None` field to `_RuleDefinition`, set to the subcategory's taxonomy-stated
+upper band for the 4 rules whose band tops out at MEDIUM
+(`auto_renewal_notice`, `insurance_waiting_period`, `insurance_deductible`,
+`renewal_fee`). Applied as a **post-threshold cap** in `score_clause` —
+`apply_severity_ceiling` can only ever lower an already-computed level,
+never raise one, and `_cap_score_for_ceiling` clamps the displayed
+`risk_score` in step so it never contradicts a capped level (e.g. never
+shows "MEDIUM" next to a 0.83 score). This monotonic-only property is why
+it introduced zero regressions across all 30 DEV + 12 TEST + 10 adversarial
+cases: no currently-*correct* case was being incorrectly elevated for one
+of these 4 subcategories, so nothing that was already right could break.
+
+**Also considered and rejected:** removing/reducing `weight_condition`'s
+role in `raw_risk_score` to resolve the same underlying documentation
+inconsistency (`Risk_Taxonomy_and_Labeling_Spec.md` §2 and
+`AI_Risk_Engine_Design.md` §3's own prose say condition completeness should
+raise confidence, not severity — but `AI_Risk_Engine_Design.md` §4's own
+formula and the Phase 5 implementation put it directly into severity). See
+`docs/SEVERITY_CALIBRATION_NOTES.md` §3.1/§4 for the full empirical
+investigation and why that fix was deferred to a real `taxonomy_v2` pass
+with inter-annotator-labeled data rather than a unilateral code change.
+
+**If a severity floor is added in a future phase:** it must be evidence-
+gated (never fabricate a HIGH/MEDIUM claim purely from a category default
+with no corroborating rule/entity/condition signal) — see
+`docs/SEVERITY_CALIBRATION_NOTES.md` §3.2 for the reasoning this constraint
+comes from.

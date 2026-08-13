@@ -6,12 +6,30 @@ must read differently from "prepayment without penalty."
 
 from __future__ import annotations
 
-from app.models.enums import RiskCategory
-from app.services.risk_rules import evaluate_rules
+from app.models.enums import RiskCategory, RiskLevel
+from app.services.risk_rules import evaluate_rules, subcategory_severity_ceiling
 
 
 def _polarities(text: str, rule_id: str) -> list[str]:
     return [m.polarity for m in evaluate_rules(text) if m.rule_id == rule_id]
+
+
+class TestSeverityCeilingLookup:
+    """PHASE_6.6 (docs/PROVISIONAL_DECISIONS.md P6.10)."""
+
+    def test_flat_medium_subcategories_have_a_medium_ceiling(self):
+        for subcategory in ("auto_renewal", "waiting_period", "deductible", "renewal_fee"):
+            assert subcategory_severity_ceiling(subcategory) == RiskLevel.MEDIUM
+
+    def test_medium_high_banded_subcategories_have_no_ceiling(self):
+        for subcategory in ("prepayment_penalty", "arbitration", "acceleration", "cross_default"):
+            assert subcategory_severity_ceiling(subcategory) is None
+
+    def test_unknown_subcategory_has_no_ceiling(self):
+        assert subcategory_severity_ceiling("not_a_real_subcategory") is None
+
+    def test_none_subcategory_has_no_ceiling(self):
+        assert subcategory_severity_ceiling(None) is None
 
 
 class TestPositivePairings:
