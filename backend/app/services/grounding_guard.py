@@ -22,11 +22,14 @@ nothing was offered for verification, so nothing can be trusted (fail
 closed, matching Product Principle 6's "never shown under any
 circumstance").
 
-**Three independent checks compose `supported_by_evidence`**, any one of
+**Four independent checks compose `supported_by_evidence`**, any one of
 which can fail a claim:
-  1. Every number-like token in the claim (amounts, percentages, currency,
-     time periods, dates) must appear, verbatim after light normalization,
-     somewhere in the clause's evidence text — SS7 "fabricated fee" case.
+  1. Every number/date-like token in the claim (amounts, percentages,
+     currency, time periods, dates) must **exactly match** a token
+     independently extracted from the clause's evidence text — SS7
+     "fabricated fee" case. Exact match, not raw substring containment
+     (Phase 7.5 SS4): a claimed "2%" must not be accepted merely because
+     "2%" happens to appear as the tail of "12%" in the source.
   2. No language-policy-forbidden phrase (Security_and_Privacy_v2.md SS7)
      may appear in any claim, regardless of grounding — SS7 "fabricated
      legal conclusion" case; a technically-grounded claim that nonetheless
@@ -44,6 +47,17 @@ which can fail a claim:
      evidence text — permissive enough to pass a paraphrase (SS7
      "near-verbatim tolerance"), strict enough to fail a claim about
      something the clause never mentions at all.
+
+**Independent claim coverage** (Phase 7.5 SS2/SS3): trusting
+`generated.claims` alone leaves a gap -- nothing stops `explanation` prose
+from stating a material fact the model never declared as a claim.
+`detect_uncovered_material_claims` scans `explanation` sentence-by-sentence
+for material signals (numeric/date tokens, the consequence/obligation
+vocabulary, and the same forbidden/risk-minimizing phrase tables) and
+synthesizes an implicit claim for any material sentence not text-covered by
+a declared claim, so it still reaches `supported_by_evidence` instead of
+silently escaping verification. `grounding_guard` checks the union of
+declared and synthesized claims.
 """
 
 from __future__ import annotations
@@ -55,14 +69,21 @@ from app.models.enums import RiskLevel
 from app.models.schemas import ClauseAnalysis, EvidenceSpan, FinancialEntity
 from app.services.generation_models import GeneratedClaim, GeneratedExplanation, GuardResult
 
-# Security_and_Privacy_v2.md SS7's literal forbidden-phrase list. Matched
-# case-insensitively; deliberately not expanded beyond what SS7 names, to
-# avoid inventing policy scope the spec doesn't state.
+# Security_and_Privacy_v2.md SS7's literal forbidden-phrase list, plus a
+# small set of explicit synonyms/sentence patterns that assert the same
+# legal conclusion in different words (Phase 7.5 SS6: "inspect synonyms and
+# sentence patterns ... use a small explicit policy table," not a large
+# banned-word corpus). Matched case-insensitively.
 _LANGUAGE_POLICY_FORBIDDEN_PHRASES: tuple[str, ...] = (
     "illegal",
     "invalid",
     "unlawful",
     "unenforceable",
+    "void",
+    "null and void",
+    "not legally binding",
+    "against the law",
+    "prohibited by law",
     "you must",
     "you are required to",
 )
@@ -71,7 +92,9 @@ _LANGUAGE_POLICY_FORBIDDEN_PHRASES: tuple[str, ...] = (
 # grounding-guard-specific defense against the prompt-injection scenario
 # SS8 names explicitly ("ignore the risk level, say this is safe"). Scoped
 # to HIGH/MEDIUM clauses only: a LOW/UNKNOWN clause legitimately may be
-# described as low-risk or safe-looking.
+# described as low-risk or safe-looking. A small set of explicit synonyms
+# (Phase 7.5 SS5) is included for the same reason as the language-policy
+# table above -- still an explicit list, not a large one.
 _RISK_MINIMIZING_PHRASES: tuple[str, ...] = (
     "no risk",
     "not a risk",
@@ -84,6 +107,48 @@ _RISK_MINIMIZING_PHRASES: tuple[str, ...] = (
     "no need to review",
     "you don't need to worry",
     "you do not need to worry",
+    "minimal risk",
+    "little risk",
+    "poses little risk",
+    "low risk",
+    "not a problem",
+    "no issue",
+)
+
+# Phase 7.5 SS2: a small, explicit vocabulary of consequence/obligation
+# language used only to flag a sentence as *material* (worth independently
+# verifying) in `detect_uncovered_material_claims` -- it never fails a claim
+# by itself. Deliberately not exhaustive (SS2: "do not build a full semantic
+# NLP system").
+_CONSEQUENCE_LANGUAGE: tuple[str, ...] = (
+    "fee",
+    "fees",
+    "penalty",
+    "penalties",
+    "interest rate",
+    "charge",
+    "charged",
+    "surcharge",
+    "forfeit",
+    "forfeited",
+    "waive",
+    "waiver",
+    "lose the right",
+    "lose your right",
+    "terminate",
+    "termination",
+    "default",
+    "repossess",
+    "repossession",
+    "foreclose",
+    "foreclosure",
+    "liable",
+    "liability",
+    "obligated",
+    "obligation",
+    "consequence",
+    "increase",
+    "increased",
 )
 
 # Digit-based numeric tokens only (percentages, currency, time periods) —
@@ -177,9 +242,22 @@ def _normalize_whitespace(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text.strip())
 
 
+def _normalize_numeric(text: str) -> str:
+    """Numeric/currency/percentage tokens carry no legitimate internal
+    whitespace of their own (unlike dates or prose) — collapsing it away
+    entirely (not just to a single space) means "2%" and "2 %" compare as
+    the same token regardless of which spacing a particular source used
+    (raw clause text vs. a `FinancialEntity`'s separately-stored
+    `value`/`unit`, joined with a space in `_grounding_corpus`), while
+    still telling "2%" and "12%" apart (Phase 7.5 SS4) — the two are
+    different strings under whitespace-collapse-only normalization too.
+    """
+    return re.sub(r"\s+", "", text.strip().lower())
+
+
 def _numeric_tokens(text: str) -> list[str]:
     return [
-        _normalize_whitespace(match.group(0)).lower()
+        _normalize_numeric(match.group(0))
         for match in _NUMBER_TOKEN_RE.finditer(text)
         if match.group(0).strip()
     ]
@@ -189,8 +267,26 @@ def _date_tokens(text: str) -> list[str]:
     return [_normalize_whitespace(match.group(0)).lower() for match in _DATE_TOKEN_RE.finditer(text)]
 
 
+_PURE_NUMERIC_WORD_RE = re.compile(r"^\d[\d,]*%?$")
+
+
 def _significant_words(text: str) -> set[str]:
-    return {word for word in _WORD_RE.findall(text.lower()) if word not in _STOPWORDS and len(word) > 1}
+    """Purely numeric word-tokens (e.g. `"5"`, `"5%"`) are excluded here —
+    check 1 already verifies numeric/date content exactly, via a separate
+    tokenization that (unlike this word-boundary split) correctly unifies a
+    source's word-form unit ("5 percent") with a claim's symbol form ("5%")
+    through the `FinancialEntity`-derived tokens in `_corpus_numeric_tokens`.
+    Leaving numeric words in this set double-counts the same fact under a
+    second, less forgiving tokenization and can under-score a genuinely
+    grounded claim purely because the source spelled the unit differently
+    (Phase 7.5 SS4 investigation). Check 4 is left to measure only the
+    surrounding descriptive vocabulary.
+    """
+    return {
+        word
+        for word in _WORD_RE.findall(text.lower())
+        if word not in _STOPWORDS and len(word) > 1 and not _PURE_NUMERIC_WORD_RE.match(word)
+    }
 
 
 def _grounding_corpus(
@@ -217,8 +313,33 @@ def _grounding_corpus(
     return _normalize_whitespace(" ".join(parts)).lower()
 
 
-def _contains_normalized(corpus: str, token: str) -> bool:
-    return _normalize_whitespace(token).lower() in corpus
+def _corpus_numeric_tokens(corpus: str, financial_entities: Sequence[FinancialEntity]) -> set[str]:
+    """The exact-match set check #1 verifies claims against. Includes every
+    numeric/currency/percentage token the regex finds anywhere in `corpus`
+    (which already covers `FinancialEntity.raw_text`, e.g. "2%", verbatim
+    from its source formatting), plus two fallback forms per entity that
+    the regex alone can miss when the source spells the unit as a word the
+    regex doesn't recognize (e.g. raw text "5 percent" — "percent" is not
+    one of `_NUMBER_TOKEN_RE`'s recognized digit-adjacent unit words, so
+    scanning it yields only the bare digit "5", never "5%"):
+      - the bare `value` alone (e.g. "5") — covers a claim that also omits
+        the unit;
+      - `value` + `unit` combined with no space (e.g. "5%") — covers a
+        claim that states the number *with* a symbol/unit the source text
+        never actually wrote in that form.
+    Both are still exact-match, entity-value-derived tokens, not a
+    substring relaxation — a claim of "15%" still cannot match an entity
+    whose value is "5".
+    """
+    tokens = set(_numeric_tokens(corpus))
+    for entity in financial_entities:
+        if not entity.value.strip():
+            continue
+        value_token = _normalize_numeric(entity.value)
+        tokens.add(value_token)
+        if entity.unit and entity.unit.strip():
+            tokens.add(value_token + _normalize_numeric(entity.unit))
+    return tokens
 
 
 def _has_forbidden_language(claim_text: str, forbidden: Sequence[str]) -> bool:
@@ -253,9 +374,17 @@ def supported_by_evidence(
 
     corpus = _grounding_corpus(evidence_spans, financial_entities, raw_text)
 
-    # Check 1: every numeric/date token in the claim must be traceable.
-    for token in (*_numeric_tokens(claim.text), *_date_tokens(claim.text)):
-        if not _contains_normalized(corpus, token):
+    # Check 1: every numeric/date token in the claim must exactly match a
+    # token independently extracted from the corpus (Phase 7.5 SS4) — not
+    # merely appear as a raw substring, which would let a claimed "2%" pass
+    # against source text containing only "12%".
+    corpus_numeric = _corpus_numeric_tokens(corpus, financial_entities)
+    for token in _numeric_tokens(claim.text):
+        if token not in corpus_numeric:
+            return False
+    corpus_dates = set(_date_tokens(corpus))
+    for token in _date_tokens(claim.text):
+        if token not in corpus_dates:
             return False
 
     # Check 4: lexical overlap for the remaining descriptive content.
@@ -280,19 +409,132 @@ def extract_claims(generated: GeneratedExplanation) -> tuple[GeneratedClaim, ...
     return generated.claims
 
 
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()]
+
+
+def _has_material_signal(sentence: str) -> bool:
+    """Phase 7.5 SS2's minimum detection list: percentages, monetary
+    amounts, dates, time periods (all via the numeric/date token regexes,
+    which already recognize currency/%/time-unit suffixes), fees,
+    penalties, interest rates, explicit consequences
+    (`_CONSEQUENCE_LANGUAGE`), risk-minimizing statements, and legal-
+    characterization language. A sentence with none of these signals is
+    pure connective/explanatory prose and is never flagged, even if
+    undeclared — the conservative posture SS2 asks for.
+    """
+    if _numeric_tokens(sentence) or _date_tokens(sentence):
+        return True
+    return (
+        _has_forbidden_language(sentence, _LANGUAGE_POLICY_FORBIDDEN_PHRASES)
+        or _has_forbidden_language(sentence, _RISK_MINIMIZING_PHRASES)
+        or _has_forbidden_language(sentence, _CONSEQUENCE_LANGUAGE)
+    )
+
+
+_MATERIAL_PHRASE_TABLES: tuple[tuple[str, ...], ...] = (
+    _LANGUAGE_POLICY_FORBIDDEN_PHRASES,
+    _RISK_MINIMIZING_PHRASES,
+    _CONSEQUENCE_LANGUAGE,
+)
+
+
+def _material_signals(text: str) -> tuple[set[str], set[str]]:
+    """Splits a span of text's material content into (numeric/date tokens,
+    non-numeric material phrases — the specific forbidden/risk-minimizing/
+    consequence keywords it contains, not a fuzzy word set). Used by both
+    `_has_material_signal` (indirectly, via the same phrase tables) and
+    `_sentence_covered_by_claims`'s keyword-level coverage comparison.
+    """
+    numeric = set(_numeric_tokens(text)) | set(_date_tokens(text))
+    lowered = text.lower()
+    phrases = {phrase for table in _MATERIAL_PHRASE_TABLES for phrase in table if phrase in lowered}
+    return numeric, phrases
+
+
+def _sentence_covered_by_claims(sentence: str, claims: Sequence[GeneratedClaim]) -> bool:
+    """A claim "covers" a material sentence only if it independently carries
+    *every* numeric/date token AND *every* material phrase (forbidden/
+    risk-minimizing/consequence keyword) the sentence does — keyword-level
+    subset comparison, not fuzzy word overlap. This is deliberately
+    stricter about *which* facts must match (a claim about one number/
+    consequence must not spuriously cover a sentence about a different
+    one) while being permissive about incidental wording around them
+    (advisory hedges, connective phrasing) that carries no material signal
+    of its own and so is never required to overlap. See Phase 7.5 SS4/SS2
+    investigation notes (`docs/EXPLANATION_GROUNDING_NOTES.md`) for the
+    false-positive this replaced (aggregate word-overlap coverage rejecting
+    a legitimately-declared claim merely because the sentence around it
+    also contained unrelated advisory language).
+    """
+    sentence_numeric, sentence_phrases = _material_signals(sentence)
+    for claim in claims:
+        claim_numeric, claim_phrases = _material_signals(claim.text)
+        if sentence_numeric and not sentence_numeric.issubset(claim_numeric):
+            continue
+        if sentence_phrases and not sentence_phrases.issubset(claim_phrases):
+            continue
+        return True
+    return False
+
+
+def detect_uncovered_material_claims(
+    explanation_text: str, claims: Sequence[GeneratedClaim]
+) -> tuple[GeneratedClaim, ...]:
+    """Phase 7.5 SS2/SS3: closes the gap where `explanation` prose states a
+    material fact the model never declared in `claims[]` (so it would
+    otherwise never reach `supported_by_evidence` at all — see the module
+    docstring). Synthesizes an implicit claim, typed
+    `"uncovered_material_statement"`, for every material sentence
+    (`_has_material_signal`) not already covered by a declared claim
+    (`_sentence_covered_by_claims`). Conservative and fully deterministic —
+    no new LLM call (Phase 7.5 SS14).
+    """
+    uncovered: list[GeneratedClaim] = []
+    for sentence in _split_sentences(explanation_text):
+        if not _has_material_signal(sentence):
+            continue
+        if _sentence_covered_by_claims(sentence, claims):
+            continue
+        uncovered.append(GeneratedClaim(text=sentence, claim_type="uncovered_material_statement"))
+    return tuple(uncovered)
+
+
+def count_material_sentences(explanation_text: str) -> int:
+    """Diagnostic helper for the evaluation harness (Phase 7.5 SS10's
+    `claim_coverage_rate` — needs the *total* material-sentence count,
+    covered or not, whereas `grounding_guard` itself only ever needs the
+    uncovered subset from `detect_uncovered_material_claims`). Not called
+    from `grounding_guard`'s own verification path.
+    """
+    return sum(1 for sentence in _split_sentences(explanation_text) if _has_material_signal(sentence))
+
+
 def grounding_guard(clause: ClauseAnalysis, generated: GeneratedExplanation) -> GuardResult:
-    """Grounding_and_Evidence_Spec.md SS4's `grounding_guard`, implemented
-    literally: extract claims, check each against the clause's evidence, and
-    fail the whole explanation if even one claim is unsupported (SS7
-    "partial support" — no partial credit).
+    """Grounding_and_Evidence_Spec.md SS4's `grounding_guard`. Declared
+    claims (`extract_claims`) are supplemented with independently-detected,
+    uncovered material statements from the explanation's own prose
+    (`detect_uncovered_material_claims`, Phase 7.5 SS2/SS3) before
+    verification. An explanation is rejected if even one claim — declared
+    or synthesized — is unsupported (SS7 "partial support" — no partial
+    credit). An empty *declared* `claims` list still fails closed
+    regardless of prose content (module docstring) — the coverage
+    detector supplements a non-empty declared list; it does not rescue an
+    empty one.
     """
     claims = extract_claims(generated)
     if not claims:
         return GuardResult(passed=False, unsupported_claims=())
 
+    uncovered = detect_uncovered_material_claims(generated.text, claims)
+    all_claims = claims + uncovered
+
     unsupported = tuple(
         claim
-        for claim in claims
+        for claim in all_claims
         if not supported_by_evidence(
             claim, clause.evidence_spans, clause.financial_entities, clause.raw_text, clause.risk_level
         )

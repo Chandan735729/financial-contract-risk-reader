@@ -1451,3 +1451,102 @@ follow. Regression-covered by
 `backend/tests/services/test_grounding_guard.py::TestSupportedByEvidenceAdditionalCases`
 and `corpus/eval/datasets/generation_ground_truth.py`'s
 `generation_risk_minimizing_injection_attempt` case.
+
+## P7.7 Independent claim-coverage detection
+
+**Location:** `backend/app/services/grounding_guard.py`
+(`detect_uncovered_material_claims`, `count_material_sentences`)
+
+**What Phase 7.5 found:** Phase 7's `grounding_guard` trusted
+`generated.claims` completely (P7.4) — but nothing stopped `explanation`
+prose from stating a material fact the model never declared as a claim, so
+that fact would never reach `supported_by_evidence` at all. Phase 7's own
+regression suite never exercised this, since every fixture's `explanation`
+happened to match its `claims[]` 1:1.
+
+**Decision:** scan `explanation` sentence-by-sentence for material signals
+(numeric/date tokens; a small explicit consequence/obligation vocabulary;
+the existing forbidden-language and risk-minimizing phrase tables) and
+synthesize an implicit claim for any material sentence not already covered
+by a declared claim's *keyword-level* content (every numeric/date token
+and every material phrase the sentence carries must also appear in the
+covering claim — not aggregate word overlap, which was tried first and
+found to reject a legitimately-declared claim merely because the sentence
+around it also contained unrelated advisory language; see
+`docs/EXPLANATION_GROUNDING_NOTES.md` §1/§6 for the investigation).
+`grounding_guard` verifies the union of declared and synthesized claims.
+Fully deterministic — no new LLM call.
+
+## P7.8 Numeric matching: exact-set, not substring; entity token augmentation
+
+**Location:** `backend/app/services/grounding_guard.py`
+(`_normalize_numeric`, `_corpus_numeric_tokens`, `_significant_words`)
+
+**What Phase 7.5 found:** Phase 7's check 1 used raw substring containment
+(`token in corpus`) — a claimed "2%" would incorrectly pass against source
+text containing only "12%", since "2%" is a literal substring of "12%".
+Fixing this to exact-set matching then surfaced two more bugs (documented
+in full in `docs/EXPLANATION_GROUNDING_NOTES.md` §6.1): a source spelling a
+unit as a word ("5 percent") never produces a "5%" token for the regex to
+extract, so a claim citing the symbol form stopped matching; and the
+separate lexical-overlap check (check 4) tokenizes "5%"/"5 percent" as
+different word sets, double-penalizing the same fact under two
+tokenizations.
+
+**Decision:** (a) exact-set membership against tokens extracted from the
+corpus with the same regex, not substring containment; (b) two
+`FinancialEntity`-derived fallback tokens per entity (bare `value`, and
+`value`+`unit` combined with no space) added to that set, covering the
+word-form-unit gap without relaxing to substring matching; (c) purely-
+numeric word-tokens excluded from `_significant_words`, so check 4 measures
+only descriptive vocabulary and never re-litigates what check 1 already
+verified exactly.
+
+## P7.9 `unsupported_claim_rate` kept as-is; new metrics added, not a replacement
+
+**Location:** `corpus/eval/metrics/generation_metrics.py`,
+`docs/EXPLANATION_GROUNDING_NOTES.md`
+
+**What Phase 7.5 found:** the reported 55.6% `unsupported_claim_rate` was
+root-caused (full diagnostic in `docs/EXPLANATION_GROUNDING_NOTES.md`) to
+be a correct number measuring something narrower than it sounds: first-
+attempt, model-*declared* claims only, on a dataset where half the cases
+are deliberately-scripted adversarial first-attempt probes. The guard
+rejected 100% of the scripted fabrications — the metric wasn't wrong, its
+name invited the wrong inference.
+
+**Decision:** keep the metric and its exact formula (comparability with
+Phase 7's own report), but document precisely what it measures, and add
+five new metrics that answer the questions the headline number was
+mistaken for answering — most importantly `unsupported_factual_claim_rate`,
+computed only over *displayed* explanations and including independently-
+detected (P7.7) claims, which is the genuine safety number. See
+`docs/EXPLANATION_GROUNDING_NOTES.md` §5 for every metric's exact
+definition and §7 for the before/after table.
+
+## P7.10 An affected-party consistency check: built, found to regress a paraphrase, reverted
+
+**Location:** `backend/app/services/grounding_guard.py` (not present —
+reverted); `backend/tests/services/test_explanation_fidelity.py::test_07_invented_affected_party_known_limitation`
+
+**What Phase 7.5 tried:** a check rejecting a claim that names a different
+contract-party role (from a small explicit vocabulary) than the clause's
+extracted `affected_party` — directly requested to catch "changes who is
+affected."
+
+**What went wrong:** the check correctly caught the invented-party case it
+was built for, but also rejected an ordinary grounded paraphrase ("The
+lender charges a 2% prepayment penalty...") whenever the paraphrase named
+the *other* real party (the one imposing the fee) as its grammatical
+subject — a legitimate, common construction. A token vocabulary cannot
+distinguish "wrongly reassigns the affected role" from "mentions the other
+real counterparty as an actor" without subject/object identification,
+which is semantic parsing the Phase 7.5 brief explicitly rules out ("do
+not build a full semantic NLP system").
+
+**Decision:** reverted rather than shipped with a demonstrated false
+positive on the most basic paraphrase scenario in the regression suite —
+consistent with Phase 6.6's precedent of documenting a rejected fix rather
+than forcing one that trades a clear regression for a partial gain. See
+`docs/EXPLANATION_GROUNDING_NOTES.md` §6.2 for the full writeup and §6.3
+for the parallel, still-open "conditionality changed" limitation.

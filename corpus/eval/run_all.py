@@ -173,6 +173,11 @@ def _run_generation() -> dict:
         "grounded_explanation_rate": report.grounded_explanation_rate,
         "fallback_rate": report.fallback_rate,
         "unsupported_claim_rate": report.unsupported_claim_rate,
+        "claim_coverage_rate": report.claim_coverage_rate,
+        "independent_factual_claim_detection_rate": report.independent_factual_claim_detection_rate,
+        "unsupported_factual_claim_rate": report.unsupported_factual_claim_rate,
+        "explanation_rejection_rate": report.explanation_rejection_rate,
+        "retry_recovery_rate": report.retry_recovery_rate,
         "citation_correctness_rate": report.citation_correctness_rate,
         "unsupported_claim_leak_count": report.unsupported_claim_leak_count,
         "incorrect_case_ids": list(report.incorrect_case_ids),
@@ -322,6 +327,8 @@ def main() -> int:
     report["generation"] = _run_generation()
     print(
         f"  grounded_explanation_rate={report['generation']['grounded_explanation_rate']:.2%} "
+        f"unsupported_factual_claim_rate={report['generation']['unsupported_factual_claim_rate']:.2%} "
+        f"claim_coverage_rate={report['generation']['claim_coverage_rate']:.2%} "
         f"unsupported_claim_leak_count={report['generation']['unsupported_claim_leak_count']}"
     )
     if report["generation"]["unsupported_claim_leak_count"] > 0:

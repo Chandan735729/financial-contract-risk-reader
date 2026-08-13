@@ -33,7 +33,11 @@ from app.services.generation_service import (  # noqa: E402
     _LLMGenerationOutput,
     generate_explanation,
 )
-from app.services.grounding_guard import grounding_guard  # noqa: E402
+from app.services.grounding_guard import (  # noqa: E402
+    count_material_sentences,
+    detect_uncovered_material_claims,
+    grounding_guard,
+)
 from app.services.llm_client import LLMGenerationError  # noqa: E402
 from corpus.eval.datasets.generation_ground_truth import (  # noqa: E402
     GENERATION_EVAL_CASES,
@@ -133,16 +137,37 @@ def _run_case(case: GenerationEvalCase) -> GenerationCaseResult:
     client = _ScriptedClient(outputs=[_to_llm_output(a) for a in case.attempts])
     outcome = generate_explanation(client, clause, max_retries=1, max_output_tokens=1024)
 
-    first_attempt_generated = _to_generated_explanation(case.attempts[0])
+    # First-attempt diagnostics (Phase 7's original metric + Phase 7.5's
+    # independent claim-coverage diagnostics).
+    first_attempt_scripted = case.attempts[0]
+    first_attempt_generated = _to_generated_explanation(first_attempt_scripted)
     first_attempt_guard = grounding_guard(clause, first_attempt_generated)
     first_attempt_claim_count = len(first_attempt_generated.claims)
-    first_attempt_unsupported = len(first_attempt_guard.unsupported_claims)
+    first_attempt_unsupported = sum(
+        1 for c in first_attempt_guard.unsupported_claims if c.claim_type != "uncovered_material_statement"
+    )
+    first_attempt_rejected = not first_attempt_guard.passed
+    uncovered = detect_uncovered_material_claims(first_attempt_generated.text, first_attempt_generated.claims)
+    material_count = count_material_sentences(first_attempt_generated.text)
 
+    # Retry-behavior diagnostics.
+    retried = len(case.attempts) > 1
+    retry_succeeded = retried and outcome.explanation_grounded and outcome.attempts > 1
+
+    # Displayed-explanation safety numbers -- only populated when something
+    # was actually shown (grounded=True); a fallback case shows nothing.
+    displayed_claim_count = 0
+    displayed_unsupported_count = 0
     reverified_unsupported = False
     if outcome.explanation_grounded:
         accepted_scripted = case.attempts[outcome.attempts - 1]
         accepted_generated = _to_generated_explanation(accepted_scripted)
         accepted_guard = grounding_guard(clause, accepted_generated)
+        accepted_uncovered = detect_uncovered_material_claims(
+            accepted_generated.text, accepted_generated.claims
+        )
+        displayed_claim_count = len(accepted_generated.claims) + len(accepted_uncovered)
+        displayed_unsupported_count = len(accepted_guard.unsupported_claims)
         reverified_unsupported = not accepted_guard.passed
 
     return GenerationCaseResult(
@@ -153,6 +178,13 @@ def _run_case(case: GenerationEvalCase) -> GenerationCaseResult:
         failure_category=outcome.failure_category,
         first_attempt_claim_count=first_attempt_claim_count,
         first_attempt_unsupported_count=first_attempt_unsupported,
+        first_attempt_material_sentence_count=material_count,
+        first_attempt_uncovered_material_count=len(uncovered),
+        first_attempt_rejected=first_attempt_rejected,
+        retried=retried,
+        retry_succeeded=retry_succeeded,
+        displayed_claim_count=displayed_claim_count,
+        displayed_unsupported_count=displayed_unsupported_count,
         accepted_attempt_reverified_unsupported=reverified_unsupported,
     )
 
@@ -195,7 +227,19 @@ def main() -> int:
 
     print(f"\n  grounded_explanation_rate={report.grounded_explanation_rate:.2%}")
     print(f"  fallback_rate={report.fallback_rate:.2%}")
-    print(f"  unsupported_claim_rate={report.unsupported_claim_rate:.2%}")
+    print(
+        f"  unsupported_claim_rate (first-attempt, declared claims only)={report.unsupported_claim_rate:.2%}"
+    )
+    print(f"  claim_coverage_rate={report.claim_coverage_rate:.2%}")
+    print(
+        "  independent_factual_claim_detection_rate=" f"{report.independent_factual_claim_detection_rate:.2%}"
+    )
+    print(
+        "  unsupported_factual_claim_rate (displayed explanations only, SAFETY METRIC)="
+        f"{report.unsupported_factual_claim_rate:.2%}"
+    )
+    print(f"  explanation_rejection_rate={report.explanation_rejection_rate:.2%}")
+    print(f"  retry_recovery_rate={report.retry_recovery_rate:.2%}")
     print(f"  citation_correctness_rate={report.citation_correctness_rate:.2%}")
     print(f"  unsupported_claim_leak_count (must be 0): {report.unsupported_claim_leak_count}")
     if report.incorrect_case_ids:
