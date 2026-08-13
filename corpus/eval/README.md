@@ -137,6 +137,50 @@ recorded as `known_gap=True` cases and in `reports/error_analysis.py`'s
 `KNOWN_FINDINGS`, so `run_all.py` has a real, honest baseline for future
 regression comparisons instead of a benchmark quietly rigged to pass.
 
+## What Phase 6.5 did (and honestly didn't) fix
+
+Phase 6.5 (docs/PROVISIONAL_DECISIONS.md P6.6/P6.8/P6.9) addressed items
+1–4 above through general fixes, not TEST-string patches — see
+`corpus/eval/reports/error_analysis.py`'s module docstring for the exact
+list of what changed. **Before → after** (DEV n=15→29, TEST n=12 unchanged):
+
+| Metric | Before | After |
+|---|---|---|
+| DEV macro F1 | 1.00 (n=15) | 1.00 (n=29, expanded benchmark) |
+| TEST macro F1 | 0.40 | 0.54 |
+| TEST HIGH precision | 1.00 | 0.67 |
+| TEST HIGH recall | 0.50 | 1.00 |
+| Entity extraction F1 | 1.00 | 1.00 (unchanged) |
+| Evidence precision | 1.00 | 1.00 (unchanged); fabrication_leak_count 0 both |
+| Abstention UNKNOWN precision | 1.00 | 1.00 (unchanged) |
+| DEV / TEST calibration ECE | 0.57 / 0.12 | 0.53 / 0.14 (still not statistically meaningful at this sample size) |
+| Adversarial (A–I + supplementary) | 7 pass, 2 known_gap, 1 observe | 9 pass, 0 known_gap, 1 observe (Case E, no fixed expected label) |
+| Reference corpus | empty | 26 `source="synthetic_seed"` patterns, 13/~35 subcategories |
+| Rule count | 5 | 13 |
+
+(Entity F1 and evidence precision dipped transiently to 0.96/0.75 mid-implementation —
+two DEV/TEST ground-truth entries were stale relative to the new, correct
+extractor behavior (a mislabeled word-form-percent case, and two evidence
+cases missing a newly-and-correctly-found consequence span after the
+consequence-before-trigger fix). Both were corrected to the actual verified
+extractor output, and a real bug the investigation surfaced — "Rs." being
+misread as a sentence boundary — was fixed with a regression test. Reported
+here rather than silently smoothed over.)
+
+**Read the TEST HIGH precision drop honestly, not defensively:** it comes
+from exactly one case (`test_interest_rate_change_no_rule_coverage`) where
+the new `interest_rate_change` rule now fires — closing the original
+"no coverage" gap — but the resulting score lands on HIGH where this file's
+gold label says MEDIUM. That was *not* weight-tuned away, because the only
+justification for such a tuning would be this single TEST case (see that
+case's `notes` in `risk_test_holdout.py`). Two more cases
+(`test_deductible_no_rule_coverage`, and the newly-covered-but-still-abstained
+`test_standalone_jury_waiver_no_rule_coverage`) show the same pattern: real
+coverage improvement, imperfect exact match against a small, hand-guessed
+gold set. Item 5 (calibration DEV→TEST transfer) was out of scope for Phase
+6.5 and remains unfixed — still uncalibrated, still `apply_calibration` is
+the identity function.
+
 ## Metrics reference
 
 | Area | Script | Key metrics |
@@ -165,22 +209,23 @@ regression comparisons instead of a benchmark quietly rigged to pass.
   calibration ECE, segmentation/retrieval numbers. Phase 6 spec: *"If
   thresholds are not yet scientifically justified: mark them as provisional
   and use them only as development warnings."* The current sample sizes
-  (12–15 cases per split) do not justify a hard numeric accuracy bar.
+  (29 DEV, 12 TEST cases as of Phase 6.5) do not justify a hard numeric accuracy bar.
 
 ## Interpreting a "PASSED" gate
 
 A passing `run_all.py` run means **no safety-critical regression was
 detected on this synthetic benchmark**. It does not mean the system is
-production-accurate, and it does not mean recall is good — TEST-split HIGH
-recall is currently 0.50, by design not gated, and reported every run so it
-stays visible instead of disappearing into a "gate passed" green checkmark.
+production-accurate — TEST-split HIGH precision/recall (0.67/1.00 as of
+Phase 6.5, see "What Phase 6.5 did" above) are, by design, not gated, and
+reported every run so they stay visible instead of disappearing into a
+"gate passed" green checkmark.
 
 ## Limitations (stated explicitly, per Phase 6 spec)
 
 - No real-world benchmark exists. `Dataset_and_Evaluation_Spec.md` §4
   (independently annotated real documents, inter-annotator agreement) is
   still open work.
-- Sample sizes are small (12–15 cases per split for most areas). Precision/
+- Sample sizes are small (29 DEV, 12 TEST cases as of Phase 6.5). Precision/
   recall/F1/ECE numbers at this scale are directional, not statistically
   robust — do not treat a 100% or 0% on a 3-case subgroup as a strong
   claim.

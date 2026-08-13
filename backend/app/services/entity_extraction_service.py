@@ -33,14 +33,25 @@ from app.models.schemas import FinancialEntityType
 # ==================================================================
 
 # Rate/time-period qualifiers that turn a bare percentage into a `rate`
-# (Phase 4 spec SS9 examples: "18% p.a.", "2% per month").
-_RATE_QUALIFIER = r"(?:per\s+(?:annum|month|year|day|week)|p\.a\.|monthly|annually|daily)"
+# (Phase 4 spec SS9 examples: "18% p.a.", "2% per month"). PHASE_6.5: added
+# "quarterly"/"per quarter" — the existing set covered annum/month/year/
+# day/week but not the equally common billing-cycle term "quarter"
+# (docs/PROVISIONAL_DECISIONS.md P6.6).
+_RATE_QUALIFIER = r"(?:per\s+(?:annum|month|year|day|week|quarter)|p\.a\.|monthly|annually|daily|quarterly)"
+
+# PHASE_6.5: "percent"/"per cent" accepted as word-form alternatives to the
+# "%" symbol (Phase 6 found "5 percent" unsupported). Still digit-led only —
+# fully spelled-out numbers ("five percent") remain explicitly unsupported,
+# same scope decision as currency word-forms (P4.7) — a number-word-to-digit
+# converter is a different, larger feature not justified by anything Phase 6
+# found.
+_PERCENT_UNIT = r"(?:%|percent|per\s+cent)"
 
 _PERCENTAGE_WITH_RATE = re.compile(
-    r"(?P<raw>\d+(?:\.\d+)?\s*%\s*" + _RATE_QUALIFIER + r")",
+    r"(?P<raw>\d+(?:\.\d+)?\s*" + _PERCENT_UNIT + r"\s*" + _RATE_QUALIFIER + r")",
     re.IGNORECASE,
 )
-_PERCENTAGE_PLAIN = re.compile(r"(?P<raw>\d+(?:\.\d+)?\s*%)")
+_PERCENTAGE_PLAIN = re.compile(r"(?P<raw>\d+(?:\.\d+)?\s*" + _PERCENT_UNIT + r")", re.IGNORECASE)
 
 # ₹ / Rs. / INR and $ currency amounts — other currencies (EUR, GBP, ...)
 # and word-form numbers ("five hundred rupees") are explicitly unsupported
@@ -49,6 +60,14 @@ _PERCENTAGE_PLAIN = re.compile(r"(?P<raw>\d+(?:\.\d+)?\s*%)")
 # a specific comma-grouping convention (Indian 2-3-digit vs. Western
 # 3-digit) — it accepts any digit/comma run so both "1,99,999" and
 # "199,999" and an ungrouped "1999.50" all match.
+#
+# PHASE_6.5 scope decision (docs/PROVISIONAL_DECISIONS.md P6.6): currency
+# ranges ("Rs. 1,000 to Rs. 5,000"), percentage ranges ("5-7%"), additional
+# currency symbols (EUR/GBP), and word-form numbers remain explicitly
+# out of scope — a range needs a genuine schema decision (low/high fields
+# on `ExtractedEntity`, or a new entity shape) not justified by anything
+# Phase 6 actually found; adding one speculatively risks a silent
+# misinterpretation (e.g. treating "5-7%" as two separate 5% and 7% matches).
 _NUMBER = r"\d[\d,]*(?:\.\d+)?"
 _CURRENCY_AMOUNT = re.compile(
     rf"(?P<raw>(?:₹|Rs\.?|INR|\$)\s?{_NUMBER}|{_NUMBER}\s?(?:₹|Rs\.?|INR|\$))",

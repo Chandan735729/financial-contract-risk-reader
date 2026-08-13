@@ -22,21 +22,34 @@ from dataclasses import dataclass
 # Connectives that introduce a trigger/condition. Longer/more specific
 # phrases are listed so they win over a shorter substring during regex
 # alternation (first-match-wins), e.g. "in the event that" over a bare "in".
+# PHASE_6.5: added "provided that", "subject to", "notwithstanding",
+# "conditional on"/"conditional upon", "upon" (docs/PROVISIONAL_DECISIONS.md
+# P6.6 item 4 — these three were previously unrecognized entirely). Bare
+# "provided" is deliberately NOT added — it collides with cross-reference
+# phrasing ("as provided in Section 7"), which must not be mistaken for a
+# conditional trigger.
 _TRIGGER_MARKERS = re.compile(
-    r"\b(?:in\s+the\s+event\s+that|in\s+case|if|should|where|when)\b",
+    r"\b(?:in\s+the\s+event\s+that|in\s+case|provided\s+that|subject\s+to|notwithstanding|"
+    r"conditional\s+(?:on|upon)|if|should|where|when|upon)\b",
     re.IGNORECASE,
 )
 # "unless"/"except" introduce a *negative* conditional — still a trigger
 # marker, just flagged separately so callers/tests can distinguish polarity
 # if useful later; the extracted trigger text itself is unchanged.
-_NEGATIVE_TRIGGER_MARKERS = re.compile(r"\b(?:unless|except\s+(?:where|that|if))\b", re.IGNORECASE)
+# PHASE_6.5: broadened from "except\s+(?:where|that|if)" to bare "except" —
+# the narrower phrase missed common exception phrasing like "except as ..."
+# (adversarial Case E: "Except as provided in Section 7, no prepayment fee
+# applies."). The trigger-start position is unaffected either way since the
+# extracted trigger text is derived from the marker's start offset, not the
+# marker text itself.
+_NEGATIVE_TRIGGER_MARKERS = re.compile(r"\b(?:unless|except)\b", re.IGNORECASE)
 
 # Words that mark the start of a temporal/threshold qualifier *within* a
 # trigger span — splits "the event" from "the measurable condition on it",
 # e.g. "remains unpaid" (trigger) vs "for more than 30 days" (condition).
 _CONDITION_QUALIFIER = re.compile(
-    r"\b(?:within|for\s+more\s+than|for\s+at\s+least|more\s+than|less\s+than|after|before|"
-    r"in\s+excess\s+of|up\s+to)\b",
+    r"\b(?:within|for\s+more\s+than|for\s+at\s+least|more\s+than|less\s+than|no\s+later\s+than|"
+    r"after|before|in\s+excess\s+of|up\s+to)\b",
     re.IGNORECASE,
 )
 
@@ -47,6 +60,15 @@ _CONSEQUENCE_MARKER = re.compile(
 )
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.;])\s+")
+# PHASE_6.5: a narrower variant used only for finding the sentence *start*
+# before a trigger marker (`_sentence_start_before` below) — excludes a
+# period immediately preceded by a short Title-case abbreviation ("Rs.",
+# "Mr.", "No.", ...) so "An early termination fee of Rs. 5,000 applies if
+# ..." doesn't get its pre-trigger consequence truncated at "Rs." as if that
+# were a real sentence boundary. Deliberately not applied to `_SENTENCE_SPLIT`
+# itself (the tail/consequence-end truncation), which has been correct as-is
+# and is out of scope for this fix.
+_SENTENCE_START_SPLIT = re.compile(r"(?<![A-Z][a-z]\.)(?<=[.;])\s+")
 _CLAUSE_SPLIT = re.compile(r",\s*")
 
 _PARTY_TERMS = (
@@ -82,6 +104,17 @@ def _find_affected_party(text: str) -> str | None:
     return match.group(0) if match else None
 
 
+def _sentence_start_before(text: str, position: int) -> int:
+    """Start offset of the sentence enclosing `position` — the end of the
+    last `_SENTENCE_SPLIT` match strictly before `position`, or 0 if `position`
+    is in the first sentence. Used to recover text *before* a trigger marker
+    within its own sentence (PHASE_6.5 consequence-before-trigger fix below)."""
+    start = 0
+    for match in _SENTENCE_START_SPLIT.finditer(text, 0, position):
+        start = match.end()
+    return start
+
+
 def _split_trigger_and_condition(span: str) -> tuple[str | None, str | None]:
     qualifier_match = _CONDITION_QUALIFIER.search(span)
     if qualifier_match is None:
@@ -109,6 +142,14 @@ def extract_condition(clause_text: str) -> ExtractedCondition:
     The pre-comma (or pre-marker) portion is then further split into
     `trigger` vs `condition` on a qualifier word ("within", "for more
     than", ...), if one is present.
+
+    PHASE_6.5 (docs/PROVISIONAL_DECISIONS.md P6.6 item 1): if neither of the
+    above finds a consequence, the text *before* the trigger marker within
+    its own sentence is used as a last-resort consequence — covers
+    "X shall pay Y if Z" phrasing (consequence-before-trigger), not just
+    "if Z, X shall pay Y" (trigger-before-consequence). Sentences where the
+    trigger marker already opens the sentence have no such pre-trigger text,
+    so this never changes previously-correct trigger-first extractions.
     """
     affected_party = _find_affected_party(clause_text)
 
@@ -156,6 +197,12 @@ def extract_condition(clause_text: str) -> ExtractedCondition:
             if len(candidate) >= _MIN_CONSEQUENCE_CHARS:
                 consequence = candidate
                 pre = pre[: marker_match.start()].strip(" .,;")
+
+    if consequence is None:
+        sentence_start = _sentence_start_before(clause_text, trigger_match.start())
+        pre_trigger_text = clause_text[sentence_start : trigger_match.start()].strip(" .,;")
+        if len(pre_trigger_text) >= _MIN_CONSEQUENCE_CHARS:
+            consequence = pre_trigger_text
 
     trigger, condition = _split_trigger_and_condition(pre)
 

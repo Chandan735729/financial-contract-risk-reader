@@ -32,6 +32,12 @@ class RiskBenchmarkCase:
     document_type: DocumentType = DocumentType.LOAN
     matched_patterns: tuple[PatternSignal, ...] = field(default_factory=tuple)
     low_confidence_flag: bool = False
+    # PHASE_6.5 addition (docs/PROVISIONAL_DECISIONS.md) — optional gold
+    # category so `run_risk_engine_eval.py` can report DEV per-category
+    # metrics, not just per-level. `None` (the default) for pre-existing
+    # cases that predate this field; only newly-added Phase 6.5 cases below
+    # populate it.
+    risk_category: RiskCategory | None = None
 
 
 def _pattern(
@@ -172,5 +178,146 @@ BENCHMARK_CASES: tuple[RiskBenchmarkCase, ...] = (
         name="definitions_boilerplate",
         text='"Business Day" means any day other than a Saturday, Sunday, or public holiday.',
         gold_risk_level="UNKNOWN",
+    ),
+    # ================================================================
+    # PHASE_6.5 additions (docs/PROVISIONAL_DECISIONS.md) — diverse cases
+    # covering the 8 new rule categories, consequence-first phrasing, the
+    # new condition connectives, a conditional-exception case, and an
+    # explicit cross-reference regression guard. Every `gold_risk_level`
+    # here was verified against the actual `score_clause` output before
+    # being recorded (same discipline as the rest of this file) — written
+    # fresh, independent of every TEST/adversarial fixture's wording.
+    # ================================================================
+    RiskBenchmarkCase(
+        name="insurance_exclusion_with_trigger",
+        text=(
+            "If the claim relates to an injury sustained during professional sports, "
+            "coverage under this policy excludes that claim entirely."
+        ),
+        gold_risk_level="MEDIUM",
+        document_type=DocumentType.INSURANCE,
+        risk_category=RiskCategory.INSURANCE,
+    ),
+    RiskBenchmarkCase(
+        name="insurance_waiting_period",
+        text=(
+            "A waiting period of 60 days from policy issuance applies before "
+            "maternity-related coverage becomes effective."
+        ),
+        gold_risk_level="MEDIUM",
+        document_type=DocumentType.INSURANCE,
+        risk_category=RiskCategory.INSURANCE,
+    ),
+    RiskBenchmarkCase(
+        name="insurance_deductible",
+        text=(
+            "For every claim made under this health policy, a deductible of Rs. 3,000 "
+            "is payable by the policyholder before any coverage amount applies."
+        ),
+        gold_risk_level="MEDIUM",
+        document_type=DocumentType.INSURANCE,
+        risk_category=RiskCategory.INSURANCE,
+    ),
+    RiskBenchmarkCase(
+        name="interest_rate_change_on_missed_payments",
+        text=(
+            "Should the borrower miss two consecutive installments, the interest rate "
+            "on the outstanding balance shall increase by 2.5% per annum."
+        ),
+        gold_risk_level="HIGH",
+        risk_category=RiskCategory.INTEREST_REPAYMENT,
+    ),
+    RiskBenchmarkCase(
+        name="standalone_class_action_waiver",
+        text=(
+            "Upon signing this agreement, the customer waives any right to bring a "
+            "class action claim against the company."
+        ),
+        gold_risk_level="MEDIUM",
+        risk_category=RiskCategory.LOSS_OF_RIGHTS,
+    ),
+    RiskBenchmarkCase(
+        name="cross_default_other_lender",
+        text=(
+            "Should the borrower default under any other loan or credit agreement "
+            "with any other lender, that default shall be treated as a cross-default "
+            "under this agreement, permitting this lender to demand early repayment."
+        ),
+        gold_risk_level="MEDIUM",
+        risk_category=RiskCategory.DEFAULT,
+    ),
+    RiskBenchmarkCase(
+        name="policy_renewal_fee",
+        text=(
+            "A renewal fee of Rs. 1,200 is payable by the policyholder at the start "
+            "of each renewed policy year."
+        ),
+        gold_risk_level="MEDIUM",
+        document_type=DocumentType.INSURANCE,
+        risk_category=RiskCategory.RENEWAL,
+    ),
+    RiskBenchmarkCase(
+        name="unilateral_termination_sole_discretion",
+        text=(
+            "The company may terminate this agreement at its sole discretion at any "
+            "time upon 15 days written notice to the customer."
+        ),
+        gold_risk_level="MEDIUM",
+        risk_category=RiskCategory.TERMINATION,
+    ),
+    # -- Consequence-before-trigger (PHASE_6.5 condition-extraction fix) --
+    RiskBenchmarkCase(
+        name="consequence_first_acceleration_with_entity",
+        text=(
+            "The lender shall be entitled to accelerate the entire outstanding "
+            "balance of INR 50,000 if the borrower defaults on two consecutive "
+            "installments."
+        ),
+        gold_risk_level="HIGH",
+        risk_category=RiskCategory.DEFAULT,
+    ),
+    # -- New connective: "provided that" combined with a clean negation --
+    RiskBenchmarkCase(
+        name="provided_that_with_confirmed_negation",
+        text=(
+            "Provided that the borrower has made all scheduled payments, no "
+            "prepayment penalty shall apply."
+        ),
+        gold_risk_level="LOW",
+        risk_category=RiskCategory.FINANCIAL_COST,
+    ),
+    # -- Terminology drift: paraphrase of prepayment_penalty's canonical wording --
+    RiskBenchmarkCase(
+        name="prepayment_fee_paraphrase",
+        text=(
+            "Borrower must remit a fee for repaying the loan ahead of schedule, "
+            "calculated at 3% of the remaining balance."
+        ),
+        gold_risk_level="MEDIUM",
+        risk_category=RiskCategory.FINANCIAL_COST,
+    ),
+    # -- Conditional exception ("no X unless Y" must not read globally LOW) --
+    RiskBenchmarkCase(
+        name="no_termination_fee_unless_early_cancellation",
+        text=(
+            "No early termination fee applies unless the customer cancels within "
+            "the first 30 days of signing."
+        ),
+        gold_risk_level="MEDIUM",
+        risk_category=RiskCategory.TERMINATION,
+    ),
+    RiskBenchmarkCase(
+        name="ambiguous_state_dependent_terms",
+        text="Certain policy terms may vary by state and are subject to change.",
+        gold_risk_level="UNKNOWN",
+        document_type=DocumentType.INSURANCE,
+    ),
+    # -- Cross-reference-only regression guard (must abstain, never invent
+    # risk from a clause that just points elsewhere) --
+    RiskBenchmarkCase(
+        name="cross_reference_only_insurance_exclusions",
+        text="Insurance exclusions applicable to this policy are set forth in Schedule C.",
+        gold_risk_level="UNKNOWN",
+        document_type=DocumentType.INSURANCE,
     ),
 )

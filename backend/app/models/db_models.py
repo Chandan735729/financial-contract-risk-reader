@@ -275,6 +275,12 @@ class CorpusPattern(Base):
     — no v1 `corpus_patterns` definition is available. `source` values
     ("cuad" | "scraped_indian") are drawn directly from the example in
     `matched_patterns` (Risk_Taxonomy_and_Labeling_Spec.md SS6), not invented.
+
+    PHASE_6.5 (docs/PROVISIONAL_DECISIONS.md P6.8): a third `source` value,
+    `"synthetic_seed"`, was added for `corpus/build/seed_patterns.py`'s
+    hand-authored dev-corpus rows — clearly distinct from the real-world
+    `"cuad"`/`"scraped_indian"` sources so real and synthetic provenance are
+    never conflated in a query or report.
     """
 
     __tablename__ = "corpus_patterns"

@@ -123,7 +123,7 @@ class TestCaseF_MissingEvidence:
             )
             assert level == RiskLevel.UNKNOWN
             assert abstained is True
-            assert "evidence" in reason.lower()
+            assert reason is not None and "evidence" in reason.lower()
 
     def test_high_candidate_with_verified_evidence_is_not_downgraded(self):
         level, abstained, reason = apply_abstention_rules(
@@ -137,6 +137,25 @@ class TestCaseF_MissingEvidence:
         assert level == RiskLevel.HIGH
         assert abstained is False
         assert reason is None
+
+
+class TestConditionalExceptionEndToEnd:
+    """PHASE_6.5 (docs/PROVISIONAL_DECISIONS.md P6.9, P6.6 item 2): "No X
+    unless Y" must not resolve to LOW — the exception conditionally
+    re-establishes the risk."""
+
+    def test_no_x_unless_y_is_not_low(self):
+        result = _score("No prepayment penalty applies unless the loan is repaid within 12 months.")
+        assert result.risk_level != RiskLevel.LOW
+        assert result.risk_level == RiskLevel.MEDIUM
+        assert result.abstained is False
+        assert result.signals.has_positive_low_evidence is False
+
+    def test_neither_party_waives_stays_low_or_unknown_not_risky(self):
+        result = _score(
+            "Any dispute may optionally proceed to arbitration, but neither party waives any other legal right."
+        )
+        assert result.risk_level not in (RiskLevel.HIGH, RiskLevel.MEDIUM)
 
 
 class TestCaseG_ConflictingSignals:

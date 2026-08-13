@@ -6,8 +6,11 @@ being recorded here (not hand-guessed) — see the module docstring's cases
 for exactly which of the spec's "difficult cases" the current deterministic
 extractor supports and which it documented-does-not (P4.7):
 
-- `"5 percent"` (word-form number) -> **not extracted**, by design
-  (`docs/PROVISIONAL_DECISIONS.md` P4.7). Recorded here with
+- `"5 percent"` (digit-led, word-form *unit*) -> **PHASE_6.5: now extracted**
+  (`docs/PROVISIONAL_DECISIONS.md` P6.6) — `"percent"`/`"per cent"` are
+  supported alternatives to the `"%"` symbol.
+- `"five percent"` (word-form *number*) -> **not extracted**, by design
+  (`docs/PROVISIONAL_DECISIONS.md` P4.7, still in scope). Recorded with
   `expected_to_be_extracted=False` so the eval harness scores "correctly
   extracted nothing" as a pass, not a silent gap.
 - `"₹10,000-₹20,000"` (a range) -> extracted as **two separate `amount`
@@ -43,12 +46,27 @@ ENTITY_CASES: tuple[ClauseGroundTruth, ...] = (
         entities=(GroundTruthEntity("percentage", "5.0%", "5.0"),),
     ),
     ClauseGroundTruth(
-        case_id="entity_word_form_percentage_unsupported",
+        case_id="entity_percent_word_unit_supported",
         text="A prepayment penalty of 5 percent applies to early repayment.",
         split=DatasetSplit.DEV,
+        label_kind="positive",
+        entities=(GroundTruthEntity("percentage", "5 percent", "5"),),
+        notes="PHASE_6.5: 'percent'/'per cent' added as word-form alternatives to the '%' "
+        "symbol (docs/PROVISIONAL_DECISIONS.md P6.6) — this is a digit-led percentage with a "
+        "word-form *unit* ('percent' instead of '%'), now correctly supported. Distinct from "
+        "a word-form *number* (see entity_word_form_number_percentage_unsupported below), "
+        "which remains unsupported.",
+    ),
+    ClauseGroundTruth(
+        case_id="entity_word_form_number_percentage_unsupported",
+        text="A prepayment penalty of five percent applies to early repayment.",
+        split=DatasetSplit.DEV,
         label_kind="negative",
-        entities=(GroundTruthEntity("percentage", "5 percent", None, expected_to_be_extracted=False),),
-        notes="Word-form numbers are documented-unsupported (P4.7) — correct behavior is to extract nothing.",
+        entities=(GroundTruthEntity("percentage", "five percent", None, expected_to_be_extracted=False),),
+        notes="Word-form *numbers* ('five' instead of '5') remain documented-unsupported "
+        "(P4.7) — correct behavior is to extract nothing. This is the genuinely-still-unsupported "
+        "case; it was previously conflated with the digit-led 'N percent' case above, which is "
+        "a different (now-supported) pattern.",
     ),
     ClauseGroundTruth(
         case_id="entity_rate_per_month",

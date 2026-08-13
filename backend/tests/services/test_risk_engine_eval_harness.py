@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.models.enums import ConfidenceLevel, RiskLevel
+from app.models.enums import ConfidenceLevel, RiskCategory, RiskLevel
 from app.services.condition_extraction_service import extract_condition
 from app.services.entity_extraction_service import extract_financial_entities
 from app.services.evidence_engine import EvidenceResult
@@ -45,11 +45,13 @@ def _dummy_evidence() -> EvidenceResult:
     return EvidenceResult(verified=(), unverifiable_count=0, diagnostics=())
 
 
-def _make_result(level: RiskLevel, *, abstained: bool = False) -> RiskResult:
+def _make_result(
+    level: RiskLevel, *, abstained: bool = False, category: RiskCategory | None = None
+) -> RiskResult:
     return RiskResult(
         risk_level=level,
         risk_score=0.0,
-        risk_category=None,
+        risk_category=category,
         risk_subcategory=None,
         confidence_level=ConfidenceLevel.LOW,
         confidence_score=0.0,
@@ -134,6 +136,58 @@ class TestMetricsArithmetic:
         report = evaluate_risk_engine([], [])
         assert report.case_count == 0
         assert report.macro_f1 == 0.0
+        assert report.per_category == ()
+
+
+class TestPerCategoryMetrics:
+    """PHASE_6.5: `per_category` breakdown alongside the existing
+    per-`RiskLevel` one, so a report can show which taxonomy category
+    improved, not just HIGH/MEDIUM/LOW/UNKNOWN in aggregate."""
+
+    def test_omitting_gold_category_yields_empty_per_category(self):
+        results = [_make_result(RiskLevel.HIGH, category=RiskCategory.FINANCIAL_COST)]
+        report = evaluate_risk_engine(results, [RiskLevel.HIGH])
+        assert report.per_category == ()
+
+    def test_perfect_category_predictions_yield_precision_recall_f1_of_one(self):
+        results = [
+            _make_result(RiskLevel.HIGH, category=RiskCategory.FINANCIAL_COST),
+            _make_result(RiskLevel.MEDIUM, category=RiskCategory.INSURANCE),
+        ]
+        gold = [RiskLevel.HIGH, RiskLevel.MEDIUM]
+        gold_category: list[RiskCategory | None] = [RiskCategory.FINANCIAL_COST, RiskCategory.INSURANCE]
+        report = evaluate_risk_engine(results, gold, gold_category=gold_category)
+        assert {m.category for m in report.per_category} == {
+            RiskCategory.FINANCIAL_COST,
+            RiskCategory.INSURANCE,
+        }
+        for m in report.per_category:
+            assert m.precision == 1.0
+            assert m.recall == 1.0
+            assert m.f1 == 1.0
+            assert m.support == 1
+
+    def test_wrong_category_lowers_precision_and_recall(self):
+        # Gold FINANCIAL_COST, predicted INSURANCE — a miss for both categories.
+        results = [_make_result(RiskLevel.HIGH, category=RiskCategory.INSURANCE)]
+        gold = [RiskLevel.HIGH]
+        gold_category: list[RiskCategory | None] = [RiskCategory.FINANCIAL_COST]
+        report = evaluate_risk_engine(results, gold, gold_category=gold_category)
+        financial = next(m for m in report.per_category if m.category == RiskCategory.FINANCIAL_COST)
+        insurance = next(m for m in report.per_category if m.category == RiskCategory.INSURANCE)
+        assert financial.recall == 0.0  # gold FINANCIAL_COST never predicted
+        assert insurance.precision == 0.0  # predicted INSURANCE never correct
+
+    def test_none_gold_category_never_counted_as_a_category(self):
+        results = [_make_result(RiskLevel.UNKNOWN, category=None)]
+        gold = [RiskLevel.UNKNOWN]
+        report = evaluate_risk_engine(results, gold, gold_category=[None])
+        assert report.per_category == ()
+
+    def test_mismatched_gold_category_length_raises(self):
+        results = [_make_result(RiskLevel.HIGH, category=RiskCategory.FINANCIAL_COST)]
+        with pytest.raises(ValueError):
+            evaluate_risk_engine(results, [RiskLevel.HIGH], gold_category=[])
 
     def test_mismatched_lengths_raise(self):
         with pytest.raises(ValueError):

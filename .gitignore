@@ -31,6 +31,12 @@ htmlcov/
 dist/
 build/
 *.egg
+# PHASE_6.5: `corpus/build/` is a tracked source package (corpus seed-build
+# pipeline), not a Python packaging build artifact — re-include it despite
+# the generic `build/` ignore above. __pycache__/ inside it is still
+# ignored via the rule above.
+!corpus/build/
+!corpus/build/*.py
 
 # ==================================================
 # Node / frontend

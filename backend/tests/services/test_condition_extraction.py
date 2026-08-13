@@ -151,6 +151,104 @@ class TestAffectedParty:
         assert r.affected_party == "Either party"
 
 
+class TestConsequenceBeforeTrigger:
+    """PHASE_6.5 (docs/PROVISIONAL_DECISIONS.md P6.6 item 1): "X shall pay Y
+    if Z" phrasing must capture X-shall-pay-Y as the consequence, not just
+    "if Z, X shall pay Y" ordering."""
+
+    def test_consequence_before_if_trigger(self):
+        r = extract_condition("Borrower shall pay a 5% prepayment penalty if the loan is repaid early.")
+        assert r.trigger == "if the loan is repaid early"
+        assert r.consequence == "Borrower shall pay a 5% prepayment penalty"
+
+    def test_consequence_before_where_trigger(self):
+        r = extract_condition("Lender may terminate the agreement where the borrower fails to perform.")
+        assert r.trigger is not None
+        assert r.consequence == "Lender may terminate the agreement"
+
+    def test_trigger_before_consequence_still_works_unchanged(self):
+        # Existing trigger-first ordering must be unaffected by the new
+        # pre-trigger fallback (no text precedes the trigger marker here).
+        r = extract_condition("If the borrower defaults, the lender may accelerate the loan.")
+        assert r.trigger == "If the borrower defaults"
+        assert r.consequence == "the lender may accelerate the loan"
+
+    def test_rs_abbreviation_not_mistaken_for_sentence_boundary(self):
+        # Regression guard: "Rs." (period + space) must not be misread as a
+        # sentence end when computing the pre-trigger consequence span, or
+        # the captured consequence gets truncated at "Rs." instead of
+        # including the full preceding clause.
+        r = extract_condition(
+            "An early termination fee of Rs. 5,000 applies if the agreement is "
+            "terminated before the end of the term."
+        )
+        assert r.consequence == "An early termination fee of Rs. 5,000 applies"
+
+    def test_short_pre_trigger_fragment_not_kept_as_consequence(self):
+        # "Note" is well under _MIN_CONSEQUENCE_CHARS and the tail after
+        # "if" has no comma/marker-derived consequence of its own — must not
+        # fabricate "Note" into a consequence.
+        r = extract_condition("Note if the schedule changes.")
+        assert r.consequence is None
+
+
+class TestNewConnectives:
+    """PHASE_6.5 (docs/PROVISIONAL_DECISIONS.md P6.6 item 4): 'provided
+    that', 'subject to', 'notwithstanding' were previously unrecognized."""
+
+    def test_provided_that(self):
+        r = extract_condition(
+            "Provided that all conditions are met, the loan shall be disbursed within 5 days."
+        )
+        assert r.trigger == "Provided that all conditions are met"
+        assert r.consequence == "the loan shall be disbursed within 5 days"
+
+    def test_subject_to(self):
+        r = extract_condition("Subject to credit approval, the interest rate shall be fixed at 10 percent.")
+        assert r.trigger == "Subject to credit approval"
+        assert r.consequence == "the interest rate shall be fixed at 10 percent"
+
+    def test_notwithstanding(self):
+        r = extract_condition(
+            "Notwithstanding any other provision, the lender may demand immediate repayment."
+        )
+        assert r.trigger == "Notwithstanding any other provision"
+        assert r.consequence == "the lender may demand immediate repayment"
+        assert r.affected_party == "the lender"
+
+    def test_conditional_upon(self):
+        r = extract_condition("Conditional upon board approval, the credit line shall be extended.")
+        assert r.trigger == "Conditional upon board approval"
+        assert r.consequence == "the credit line shall be extended"
+
+    def test_bare_upon(self):
+        r = extract_condition("Upon default, the lender may accelerate the loan.")
+        assert r.trigger == "Upon default"
+        assert r.consequence == "the lender may accelerate the loan"
+
+    def test_bare_provided_not_added_avoids_cross_reference_collision(self):
+        # "as provided in Section 7" must not be mistaken for a conditional
+        # trigger — bare "provided" is deliberately excluded from the marker
+        # set for exactly this reason.
+        r = extract_condition("Prepayment terms are as provided in Section 7 of this agreement.")
+        assert r.trigger is None
+
+    def test_no_later_than_qualifier(self):
+        r = extract_condition(
+            "If payment is not received no later than 5 days after the due date, a fee applies."
+        )
+        assert r.condition is not None
+        assert "no later than 5 days" in r.condition
+
+
+class TestBroadenedExceptMarker:
+    def test_bare_except_as_detected(self):
+        r = extract_condition("Except as provided in Section 7, no prepayment fee applies.")
+        assert r.is_negative_trigger is True
+        assert r.trigger == "Except as provided in Section 7"
+        assert r.consequence == "no prepayment fee applies"
+
+
 class TestNeverInventsFields:
     def test_empty_clause_returns_all_none(self):
         r = extract_condition("")

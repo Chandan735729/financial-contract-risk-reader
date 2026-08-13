@@ -42,7 +42,7 @@ for _path in (str(_REPO_ROOT), str(_BACKEND_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from app.models.enums import RiskLevel  # noqa: E402
+from app.models.enums import RiskCategory, RiskLevel  # noqa: E402
 from app.services.condition_extraction_service import extract_condition  # noqa: E402
 from app.services.entity_extraction_service import extract_financial_entities  # noqa: E402
 from app.services.risk_engine import EntitySignal, RiskResult, score_clause  # noqa: E402
@@ -67,6 +67,7 @@ class _NormalizedCase:
     matched_patterns: tuple
     low_confidence_flag: bool
     known_gap: bool = False
+    gold_risk_category: RiskCategory | None = None
 
 
 def _from_dev_case(case) -> _NormalizedCase:
@@ -77,6 +78,7 @@ def _from_dev_case(case) -> _NormalizedCase:
         document_type=case.document_type,
         matched_patterns=tuple(case.matched_patterns),
         low_confidence_flag=case.low_confidence_flag,
+        gold_risk_category=getattr(case, "risk_category", None),
     )
 
 
@@ -89,6 +91,7 @@ def _from_ground_truth(case) -> _NormalizedCase:
         matched_patterns=(),
         low_confidence_flag=case.low_confidence_flag,
         known_gap=case.known_gap,
+        gold_risk_category=case.risk_category,
     )
 
 
@@ -111,13 +114,22 @@ def _score_text(text: str, *, matched_patterns, document_type, low_confidence_fl
     )
 
 
-def _print_report(results: list[RiskResult], gold: list[RiskLevel]) -> None:
-    report = evaluate_risk_engine(results, gold)
+def _print_report(
+    results: list[RiskResult], gold: list[RiskLevel], gold_category: list[RiskCategory | None]
+) -> None:
+    report = evaluate_risk_engine(results, gold, gold_category=gold_category)
     print("\nPer-level precision / recall / F1:")
     for m in report.per_level:
         print(
             f"  {m.level.value:10s} P={m.precision:.2f} R={m.recall:.2f} F1={m.f1:.2f} (support={m.support})"
         )
+    if report.per_category:
+        print("\nPer-category precision / recall / F1 (PHASE_6.5):")
+        for m in report.per_category:
+            print(
+                f"  {m.category.value:22s} P={m.precision:.2f} R={m.recall:.2f} F1={m.f1:.2f} "
+                f"(support={m.support})"
+            )
     print(f"\nMacro F1:                                  {report.macro_f1:.2f}")
     print(f"High-risk precision:                       {report.high_risk_precision:.2f}")
     print(f"High-risk recall:                          {report.high_risk_recall:.2f}")
@@ -136,6 +148,7 @@ def _run_dev_or_test(label: str, cases: list[_NormalizedCase]) -> None:
 
     results: list[RiskResult] = []
     gold: list[RiskLevel] = []
+    gold_category: list[RiskCategory | None] = []
     for case in cases:
         result = _score_text(
             case.text,
@@ -146,6 +159,7 @@ def _run_dev_or_test(label: str, cases: list[_NormalizedCase]) -> None:
         results.append(result)
         gold_level = RiskLevel(case.gold_risk_level)
         gold.append(gold_level)
+        gold_category.append(case.gold_risk_category)
 
         matched = result.risk_level == gold_level
         gap_tag = "GAP" if (not matched and case.known_gap) else ""
@@ -155,7 +169,7 @@ def _run_dev_or_test(label: str, cases: list[_NormalizedCase]) -> None:
             f"{result.risk_score:6.3f} {result.confidence_score:6.3f} {gap_tag:>5s}"
         )
 
-    _print_report(results, gold)
+    _print_report(results, gold, gold_category)
 
 
 def _run_adversarial() -> None:

@@ -10,29 +10,30 @@ hedging is preserved here as `expected_levels` (must be one of) vs.
 one gold answer that isn't actually justified by the spec text.
 
 **This file is where Phase 6 found real gaps, and does not hide them.**
-Two are recorded here rather than silently patched (Phase 6 is an
-evaluation phase, not a feature/engine-change phase):
+Phase 6 recorded three (Case A, Case C, `neither_party_waives_gap`) rather
+than silently patching them (Phase 6 was an evaluation phase, not a
+feature/engine-change phase). **PHASE_6.5 fixed all three** — see
+docs/PROVISIONAL_DECISIONS.md P6.6/P6.9 for the general fixes (not
+case-specific patches):
 
-- Case A's canonical phrasing ("Borrower shall pay a 5% prepayment penalty
-  if the loan is repaid early") currently scores MEDIUM (0.69), one
-  weight-unit under the HIGH threshold (0.70) - not HIGH, contrary to the
-  spec's explicit expectation. Root cause: `condition_extraction_service`
-  only looks for a consequence *after* the trigger marker's sentence
-  position; this natural "X shall Y if Z" ordering places the consequence
-  (the penalty) *before* the trigger, so `condition_completeness` reads
-  "partial" instead of "full" and the score falls short. See
-  `run_risk_engine_eval.py`'s adversarial section output and
-  docs/PROVISIONAL_DECISIONS.md "Phase 6: adversarial findings."
-- `neither_party_waives_gap` (an explicit extra case, not part of the
-  spec's A-I list) shows `risk_rules._NEGATION_CUES` does not include
-  "neither" - "neither party waives" is misclassified as a *positive*
-  arbitration_waiver rule hit instead of negative. It happens not to reach
-  MEDIUM/HIGH here only because the condition chain is otherwise weak, which
-  is a coincidence, not a fix.
+- Case A ("Borrower shall pay a 5% prepayment penalty if the loan is repaid
+  early") now scores HIGH (0.74). Fixed by
+  `condition_extraction_service`'s consequence-before-trigger fallback
+  (captures text *before* the trigger marker as the consequence when
+  nothing is found after it) — a general fix to the extractor's sentence
+  handling, not specific to this sentence.
+- Case C ("No prepayment penalty applies unless the loan is repaid within
+  12 months") now scores MEDIUM (0.68), no longer LOW. Fixed by
+  `risk_rules.py`'s conditional-exception polarity (P6.9): a simple-negated
+  rule pairing followed by an "unless"/"except" exception marker in the
+  same sentence now gets `polarity="conditional"` (risk-bearing) instead of
+  `"negative"` (confirmed-safe).
+- `neither_party_waives_gap` now scores LOW/negative as expected. Fixed by
+  adding "neither" to `risk_rules._SIMPLE_NEGATION_CUES`.
 
-Both are `known_gap=True` and intentionally left failing/borderline so the
-regression gate has a real, honest baseline to compare future engine changes
-against.
+All three are now `known_gap=False` with `strict=True` — a regression on
+any of them is a hard gate failure going forward, per P6.6's own stated
+exit criterion.
 """
 
 from __future__ import annotations
@@ -71,7 +72,8 @@ ADVERSARIAL_CASES: tuple[AdversarialCase, ...] = (
         text="Borrower shall pay a 5% prepayment penalty if the loan is repaid early.",
         spec_expectation="HIGH",
         expected_levels=(RiskLevel.HIGH,),
-        known_gap=True,  # see module docstring - currently scores MEDIUM (0.69)
+        # PHASE_6.5: fixed by the consequence-before-trigger extraction
+        # fallback - now scores HIGH (0.74). See module docstring.
     ),
     AdversarialCase(
         case_id="B",
@@ -84,9 +86,9 @@ ADVERSARIAL_CASES: tuple[AdversarialCase, ...] = (
         text="No prepayment penalty applies unless the loan is repaid within 12 months.",
         spec_expectation="NOT globally LOW - must capture the conditional risk",
         forbidden_levels=(RiskLevel.LOW,),
-        known_gap=True,  # currently scores LOW - the rule layer has no notion of a
-        # conditional carve-out re-establishing risk inside a "no X unless Y" structure;
-        # it only ever detects "no X" as a flat negation. Documented, not silently fixed.
+        # PHASE_6.5: fixed by risk_rules.py's conditional-exception polarity
+        # (P6.9) - now scores MEDIUM (0.68), no longer LOW. See module
+        # docstring.
     ),
     AdversarialCase(
         case_id="D",
@@ -164,7 +166,8 @@ ADVERSARIAL_CASES: tuple[AdversarialCase, ...] = (
         text="Any dispute may optionally proceed to arbitration, but neither party waives any other legal right.",
         spec_expectation="(supplementary) 'neither...waives' should read as negated, like 'does not...waive'",
         forbidden_levels=(RiskLevel.HIGH, RiskLevel.MEDIUM),
-        strict=False,
-        known_gap=True,
+        # PHASE_6.5: fixed by adding "neither" to
+        # risk_rules._SIMPLE_NEGATION_CUES - now strict (was strict=False
+        # while known_gap). See module docstring.
     ),
 )

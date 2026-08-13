@@ -164,9 +164,9 @@ def main() -> int:
 
     print()
     print(
-        "NOTE: DEV split only (n=15) - this grid search result is a development-time "
-        "signal, not a statistically robust threshold selection. Never evaluated against "
-        "or fit on the TEST split."
+        f"NOTE: DEV split only (n={len(DEV_CASES)}) - this grid search result is a "
+        "development-time signal, not a statistically robust threshold selection. Never "
+        "evaluated against or fit on the TEST split."
     )
     return 0
 

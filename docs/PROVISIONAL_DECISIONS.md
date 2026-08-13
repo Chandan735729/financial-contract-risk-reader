@@ -1181,3 +1181,71 @@ per CI run" (`Security_and_Privacy_v2.md` §9's general "do not
 over-engineer"/repo-hygiene posture) is satisfied by not tracking the
 directory's contents at all — a run's report is regenerable at any time by
 re-running the corresponding script against that commit.
+
+## P6.8 Corpus gap: synthetic seed corpus, not real-world sourcing
+
+**Location:** `corpus/build/seed_patterns.py`, `corpus/build/build_corpus.py`,
+`backend/app/models/db_models.py` (`CorpusPattern.source`)
+
+**What Phase 6 found:** `corpus_patterns` was empty by omission —
+`Dataset_and_Evaluation_Spec.md` §1's corpus strategy (a CUAD subset +
+permissioned scraping of Indian loan/insurance T&Cs) was scoped in
+`Implementation_Roadmap.md` Phase 2 as a stated dependency, but never
+executed; Phases 2–6 proceeded without it (`corpus/README.md`).
+
+**Decision (Phase 6.5):** real-world sourcing (CUAD subset licensing
+review, permissioned scraping with tracked provenance) is a substantial,
+legally-sensitive undertaking out of scope for this phase. Instead: build
+the ingestion pipeline (`build_corpus.py` — idempotent upsert into
+`corpus_patterns` + `retrieval_service.index_corpus_patterns` rebuild) and
+seed it with 26 small, hand-authored, taxonomy-aligned patterns
+(`source="synthetic_seed"`, `corpus_version="corpus_v1"`), one positive +
+one confirmed-negative example per the 13 taxonomy subcategories that have
+a deterministic rule. This makes retrieval mechanically functional and
+testable end-to-end (verified: dense + lexical retrieval both return real,
+ranked candidates against the seeded patterns) without claiming
+production-quality corpus coverage. `source="synthetic_seed"` is a new,
+explicitly distinct value from `"cuad"`/`"scraped_indian"` — never to be
+conflated with real corpus coverage in a report or query, and never built
+from DEV/TEST/ADVERSARIAL fixture text (which would make retrieval
+"succeed" by finding its own eval data, not by generalizing).
+
+**Still open:** the real corpus described in `Dataset_and_Evaluation_Spec.md`
+§1 remains unsourced. `corpus/README.md`'s coverage table lists which
+taxonomy subcategories have neither a rule nor a seed pattern.
+
+## P6.9 Negation/conditional-exception schema extension
+
+**Location:** `backend/app/services/risk_rules.py` (`Polarity`,
+`_SIMPLE_NEGATION_CUES`, `_EXCEPTION_MARKERS`, `_resolve_polarity`),
+`backend/app/services/risk_engine.py`
+
+**What Phase 6 found (P6.6 items 2–3):** "No prepayment penalty applies
+unless the loan is repaid within 12 months" (adversarial Case C) read as
+flat negation → LOW, because the rule layer had no concept of a conditional
+carve-out re-establishing risk. Separately, "neither party waives" was
+misclassified as a positive rule hit because `_NEGATION_CUES` lacked
+"neither."
+
+**Decision:** the smallest viable schema extension over inventing a larger
+structured "exception" shape: extend `RuleMatch.polarity` from
+`Literal["positive", "negative"]` to add a third value, `"conditional"`.
+Split the old `_NEGATION_CUES` regex into `_SIMPLE_NEGATION_CUES`
+(`without, no, not, n't, never, neither, none`) and `_EXCEPTION_MARKERS`
+(`unless, except`) — the task's explicit instruction that "except"/"unless"
+must not be treated as simple negation, since they usually introduce a
+carve-out, not a confirmed-safe absence. `excluding` was dropped from the
+cue list entirely (added risk once an `insurance_exclusion` rule exists —
+same self-negation trap the original `risk_rules.py` docstring already
+documents for `waive`/`arbitration_waiver`).
+
+A simple-negated pairing is checked for an exception marker in a **forward,
+same-sentence-only** window (`span_end` → next `.`/`;` or +100 chars,
+whichever is closer) — capped at the sentence boundary specifically so an
+unrelated "unless" in a later, unconnected sentence can't flip an
+unambiguous negative match (regression-tested). If found: `polarity =
+"conditional"`. `risk_engine.py` treats `"conditional"` like `"positive"`
+for `rule_hit`/`rule_boost`/`corroboration`/`compute_signal_agreement`/
+candidate-category selection (still risk-bearing) but never as
+`has_positive_low_evidence` (never confirmed-safe) — preserving the
+distinction on `RuleMatch` itself for evidence/explanation.

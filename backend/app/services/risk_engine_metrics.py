@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.models.enums import RiskLevel
+from app.models.enums import RiskCategory, RiskLevel
 from app.services.risk_engine import RiskResult
 
 _LEVELS: tuple[RiskLevel, ...] = (RiskLevel.HIGH, RiskLevel.MEDIUM, RiskLevel.LOW, RiskLevel.UNKNOWN)
@@ -36,9 +36,29 @@ class PerLevelMetrics:
 
 
 @dataclass(frozen=True, slots=True)
+class PerCategoryMetrics:
+    """PHASE_6.5: `PerLevelMetrics` alone can't show *which* taxonomy
+    category improved — only HIGH/MEDIUM/LOW/UNKNOWN in aggregate. Same
+    precision/recall/F1 shape, keyed on `RiskCategory` (`r.risk_category`,
+    the engine's *candidate* category, vs. the gold `risk_category`) instead
+    of `RiskLevel`. Only categories appearing in `gold_category` and/or the
+    predicted categories are included (not the full `RiskCategory` enum) —
+    a category the benchmark never exercises isn't reported as a spurious
+    0.00; a category the engine over-predicts still gets its precision
+    reported even with `support=0`."""
+
+    category: RiskCategory
+    precision: float
+    recall: float
+    f1: float
+    support: int
+
+
+@dataclass(frozen=True, slots=True)
 class RiskEvalReport:
     case_count: int
     per_level: tuple[PerLevelMetrics, ...]
+    per_category: tuple[PerCategoryMetrics, ...]
     macro_f1: float
     high_risk_precision: float
     high_risk_recall: float
@@ -64,15 +84,40 @@ def _precision_recall_f1(
     return PerLevelMetrics(level=level, precision=precision, recall=recall, f1=f1, support=support)
 
 
-def evaluate_risk_engine(results: list[RiskResult], gold: list[RiskLevel]) -> RiskEvalReport:
+def _category_precision_recall_f1(
+    predicted: list[RiskCategory | None], gold: list[RiskCategory | None], category: RiskCategory
+) -> PerCategoryMetrics:
+    tp = sum(1 for p, g in zip(predicted, gold, strict=True) if p == category and g == category)
+    fp = sum(1 for p, g in zip(predicted, gold, strict=True) if p == category and g != category)
+    fn = sum(1 for p, g in zip(predicted, gold, strict=True) if p != category and g == category)
+    support = sum(1 for g in gold if g == category)
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    return PerCategoryMetrics(category=category, precision=precision, recall=recall, f1=f1, support=support)
+
+
+def evaluate_risk_engine(
+    results: list[RiskResult],
+    gold: list[RiskLevel],
+    *,
+    gold_category: list[RiskCategory | None] | None = None,
+) -> RiskEvalReport:
     """`results`/`gold` must be the same length and index-aligned (one
-    `RiskResult` + one gold `RiskLevel` per benchmark case)."""
+    `RiskResult` + one gold `RiskLevel` per benchmark case). `gold_category`
+    is optional (PHASE_6.5 addition) — omit it (or pass all-`None`) for
+    benchmarks that don't annotate a gold category; `per_category` is then
+    simply empty rather than an error."""
     if len(results) != len(gold):
         raise ValueError("results and gold must be the same length")
+    if gold_category is not None and len(gold_category) != len(results):
+        raise ValueError("gold_category must be the same length as results/gold")
     if not results:
         return RiskEvalReport(
             case_count=0,
             per_level=tuple(_precision_recall_f1([], [], level) for level in _LEVELS),
+            per_category=(),
             macro_f1=0.0,
             high_risk_precision=0.0,
             high_risk_recall=0.0,
@@ -116,9 +161,25 @@ def evaluate_risk_engine(results: list[RiskResult], gold: list[RiskLevel]) -> Ri
         sum(1 for r in results if r.signals.signal_agreement < _DISAGREEMENT_THRESHOLD) / n
     )
 
+    if gold_category is not None:
+        predicted_category = [r.risk_category for r in results]
+        # Union of gold and predicted (not gold alone) — a category the
+        # engine over-predicts but that never appears in gold would
+        # otherwise have its precision silently unreported.
+        present_categories = sorted(
+            {c for c in (*gold_category, *predicted_category) if c is not None}, key=lambda c: c.value
+        )
+        per_category = tuple(
+            _category_precision_recall_f1(predicted_category, gold_category, category)
+            for category in present_categories
+        )
+    else:
+        per_category = ()
+
     return RiskEvalReport(
         case_count=n,
         per_level=per_level,
+        per_category=per_category,
         macro_f1=macro_f1,
         high_risk_precision=high_metrics.precision,
         high_risk_recall=high_metrics.recall,

@@ -3,23 +3,17 @@
 Every expected `trigger`/`condition`/`consequence`/`affected_party` value
 below was verified against the actual
 `condition_extraction_service.extract_condition` output before being
-recorded (not hand-guessed). Three of the spec's seven required adversarial
-connectives are **not recognized by the current extractor at all** —
-recorded here as the correct expectation (all fields `None`) with a note,
-not silently worked around:
+recorded (not hand-guessed).
 
-- `"provided that"` — not in `_TRIGGER_MARKERS`.
-- `"subject to"` — not in `_TRIGGER_MARKERS`.
-- `"notwithstanding"` — not in `_TRIGGER_MARKERS` (though
-  `affected_party` is still found independently, since that lookup doesn't
-  depend on trigger-marker detection).
-
-This is a real, load-bearing finding, not a benchmark-construction
-convenience: it means clauses using these three connectives currently
-contribute `condition_completeness=none` to the Risk Engine regardless of
-how clear their actual conditional structure is. See
-`run_condition_eval.py`'s output and
-docs/PROVISIONAL_DECISIONS.md "Phase 6: adversarial findings."
+PHASE_6.5 update: three of the spec's seven required adversarial
+connectives — `"provided that"`, `"subject to"`, `"notwithstanding"` — were
+previously not recognized by the extractor at all (recorded as all-`None`
+negative cases). `_TRIGGER_MARKERS` now includes all three
+(docs/PROVISIONAL_DECISIONS.md P6.6 item 4), so the three
+`condition_*_unsupported` cases below were renamed to `condition_*_supported`
+and their gold fields updated to the actual (verified) extractor output.
+See `run_condition_eval.py`'s output and
+docs/PROVISIONAL_DECISIONS.md "Phase 6.5: condition extraction generalization."
 """
 
 from __future__ import annotations
@@ -73,38 +67,41 @@ CONDITION_CASES: tuple[ClauseGroundTruth, ...] = (
         notes="The leading 'Only' is dropped from the trigger span; the 'if' clause itself is captured correctly.",
     ),
     ClauseGroundTruth(
-        case_id="condition_provided_that_unsupported",
+        case_id="condition_provided_that_supported",
         text="Provided that all conditions are met, the loan shall be disbursed within 5 days.",
         split=DatasetSplit.DEV,
-        label_kind="negative",
-        trigger=None,
+        label_kind="positive",
+        trigger="Provided that all conditions are met",
         condition=None,
-        consequence=None,
+        consequence="the loan shall be disbursed within 5 days",
         affected_party=None,
-        notes="'provided that' is not a recognized trigger marker — known extractor gap, see module docstring.",
+        notes="PHASE_6.5: 'provided that' added to _TRIGGER_MARKERS (docs/PROVISIONAL_DECISIONS.md P6.6 item 4). "
+        "Expected fields verified against the actual extractor output, same discipline as the rest of this file.",
     ),
     ClauseGroundTruth(
-        case_id="condition_subject_to_unsupported",
+        case_id="condition_subject_to_supported",
         text="Subject to credit approval, the interest rate shall be fixed at 10 percent.",
         split=DatasetSplit.TEST,
-        label_kind="negative",
-        trigger=None,
+        label_kind="positive",
+        trigger="Subject to credit approval",
         condition=None,
-        consequence=None,
+        consequence="the interest rate shall be fixed at 10 percent",
         affected_party=None,
-        notes="'subject to' is not a recognized trigger marker — known extractor gap, see module docstring.",
+        notes="PHASE_6.5: 'subject to' added to _TRIGGER_MARKERS (docs/PROVISIONAL_DECISIONS.md P6.6 item 4). "
+        "This case is in TEST — the expected fields come from the general marker-detection logic (verified against "
+        "the actual extractor output), not tuned to this sentence specifically.",
     ),
     ClauseGroundTruth(
-        case_id="condition_notwithstanding_unsupported",
+        case_id="condition_notwithstanding_supported",
         text="Notwithstanding any other provision, the lender may demand immediate repayment.",
         split=DatasetSplit.DEV,
-        label_kind="negative",
-        trigger=None,
+        label_kind="positive",
+        trigger="Notwithstanding any other provision",
         condition=None,
-        consequence=None,
+        consequence="the lender may demand immediate repayment",
         affected_party="the lender",
-        notes="'notwithstanding' is not a recognized trigger marker — known extractor gap, see module docstring. "
-        "affected_party is still found (independent lookup).",
+        notes="PHASE_6.5: 'notwithstanding' added to _TRIGGER_MARKERS (docs/PROVISIONAL_DECISIONS.md P6.6 item 4). "
+        "affected_party was already found independently even before this fix.",
     ),
     ClauseGroundTruth(
         case_id="condition_no_marker_present",

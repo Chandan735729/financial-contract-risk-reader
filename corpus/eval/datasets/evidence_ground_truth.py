@@ -39,8 +39,14 @@ EVIDENCE_CLAUSE_CASES: tuple[ClauseGroundTruth, ...] = (
         evidence_spans=(
             GroundTruthEvidenceSpan("5%", "entity"),
             GroundTruthEvidenceSpan("if the loan is repaid early", "condition/trigger"),
+            GroundTruthEvidenceSpan(
+                "Borrower shall pay a prepayment penalty equal to 5%", "condition/consequence"
+            ),
             GroundTruthEvidenceSpan("prepayment penalty", "rule"),
         ),
+        notes="PHASE_6.5: consequence-before-trigger extraction fallback "
+        "(docs/PROVISIONAL_DECISIONS.md P6.6 item 1) now correctly captures the pre-trigger "
+        "text as the consequence - verified against the actual extractor output.",
     ),
     ClauseGroundTruth(
         case_id="evidence_early_termination_fee",
@@ -54,8 +60,13 @@ EVIDENCE_CLAUSE_CASES: tuple[ClauseGroundTruth, ...] = (
             GroundTruthEvidenceSpan("Rs. 5,000", "entity"),
             GroundTruthEvidenceSpan("if the agreement is terminated", "condition/trigger"),
             GroundTruthEvidenceSpan("before the end of the term", "condition/qualifier"),
+            GroundTruthEvidenceSpan("An early termination fee of Rs. 5,000 applies", "condition/consequence"),
             GroundTruthEvidenceSpan("early termination fee", "rule"),
         ),
+        notes="PHASE_6.5: consequence-before-trigger extraction fallback now correctly captures "
+        "the pre-trigger text as the consequence, using an abbreviation-aware sentence-start "
+        "boundary so 'Rs.' isn't misread as ending the sentence early - verified against the "
+        "actual extractor output.",
     ),
     ClauseGroundTruth(
         case_id="evidence_auto_renewal_notice",
@@ -64,8 +75,14 @@ EVIDENCE_CLAUSE_CASES: tuple[ClauseGroundTruth, ...] = (
         label_kind="positive",
         evidence_spans=(
             GroundTruthEvidenceSpan("unless the policyholder provides notice", "condition/trigger"),
+            GroundTruthEvidenceSpan("This agreement renews automatically", "condition/consequence"),
             GroundTruthEvidenceSpan("renews automatically unless the policyholder provides notice", "rule"),
         ),
+        notes="PHASE_6.5: the consequence-before-trigger extraction fallback "
+        "(docs/PROVISIONAL_DECISIONS.md P6.6 item 1) now correctly captures 'This agreement "
+        "renews automatically' as the consequence for this trigger-mid-sentence structure - "
+        "verified against the actual extractor output, not previously present because the "
+        "extractor didn't find it at all.",
     ),
     ClauseGroundTruth(
         case_id="evidence_none_expected",

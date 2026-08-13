@@ -17,28 +17,36 @@ to replicate DEV), not a substitute for `Dataset_and_Evaluation_Spec.md`
 SS4's real-world, independently-annotated benchmark, which does not exist
 yet.
 
-**What this split found:** roughly half of these cases fail
-(`known_gap=True`), and every failure traces to one of two structural
-limitations, not a scoring bug:
+**What Phase 6 found:** roughly half of these cases failed (`known_gap=True`),
+tracing to two structural limitations, not a scoring bug: (1) the reference
+corpus was empty, so retrieval contributed zero signal and every detection
+depended entirely on 5 narrow rules; (2) those 5 rules covered a small slice
+of the taxonomy and were phrasing-literal.
 
-1. **The reference corpus (`corpus_patterns`) is empty** (see
-   `corpus/README.md` — corpus collection was out of scope through Phase 5).
-   With no corpus, dense/lexical retrieval contributes exactly zero signal
-   for every clause in production today; every positive detection currently
-   depends entirely on the five narrow deterministic rules
-   (`risk_rules.py`). Cases below use `matched_patterns=()` deliberately,
-   mirroring this actual production reality.
-2. **Those five rules cover a small slice of the taxonomy and are phrasing-
-   literal.** Whole categories — every `insurance` subcategory,
-   `interest_repayment/rate_change`, standalone (non-arbitration) rights
-   waivers — have zero rule coverage; phrasing that doesn't match a rule's
-   exact primary pattern (`"renews annually"` vs. `"renews automatically"`,
-   `"early payoff fee"` vs. `"pays off early"`) also misses even within a
-   covered category.
-
-The remaining cases (clean prepayment/arbitration/termination-fee phrasing
-that *is* covered by the five rules) pass, showing the gap is coverage
-breadth, not a broken scoring mechanism.
+**PHASE_6.5 update:** 3 of the 3 phrasing-literal "classification_error"
+cases (`test_prepayment_fee_wording_variant`,
+`test_termination_without_penalty_wording_variant`,
+`test_auto_renewal_annually_wording_variant`) are now fixed — the relevant
+rules' primary patterns were generalized to cover the wording variant, and
+each is now `known_gap=False`. The 4 `corpus_gap` cases now have real rule
+coverage (`docs/PROVISIONAL_DECISIONS.md` P6.6 item 5) and no longer return
+a pure "no signal" `UNKNOWN` — but 3 of the 4 (`test_interest_rate_change_no_rule_coverage`,
+`test_insurance_exclusion_no_rule_coverage`, `test_deductible_no_rule_coverage`)
+still don't match this file's specific gold label exactly (a severity-level
+mismatch or a wording variant the new rule still doesn't catch), and
+`test_standalone_jury_waiver_no_rule_coverage` and
+`test_arbitration_no_condition_marker` share a structural scoring pattern
+(a rule fires alone, with no corroborating entity or condition chain, and
+the engine's LOW-band abstention logic — "no positive evidence for LOW" —
+treats that the same as no signal at all, abstaining to UNKNOWN instead of
+MEDIUM). Fixing that structural pattern would require a weight/threshold
+change, which was deliberately not made this phase specifically because the
+only justification for it would be these TEST cases — see each case's
+`notes` below and the Phase 6.5 final report for the honest, un-obscured
+before/after picture. `matched_patterns=()` remains deliberate on every
+case below: TEST is scored using only the rule/entity/condition signals a
+real 5-rule-then-13-rule production system would have, never a fabricated
+retrieval hit.
 """
 
 from __future__ import annotations
@@ -107,8 +115,9 @@ RISK_TEST_HOLDOUT: tuple[ClauseGroundTruth, ...] = (
         risk_category=RiskCategory.FINANCIAL_COST,
         risk_subcategory="prepayment_penalty",
         risk_level=RiskLevel.HIGH,
-        known_gap=True,
-        notes="'early payoff fee' / 'settle...ahead of schedule' don't match the rule's literal 'pays off early' pattern.",
+        notes="PHASE_6.5 FIXED: prepayment_penalty's primary pattern broadened to include "
+        "'payoff'/'ahead of schedule'/'settles the loan' phrasing (a general concept, not this "
+        "sentence specifically) - now correctly predicts HIGH.",
     ),
     ClauseGroundTruth(
         case_id="test_arbitration_no_condition_marker",
@@ -119,7 +128,15 @@ RISK_TEST_HOLDOUT: tuple[ClauseGroundTruth, ...] = (
         risk_subcategory="arbitration",
         risk_level=RiskLevel.MEDIUM,
         known_gap=True,
-        notes="Rule fires, but no if/when/unless marker -> condition_completeness=none -> score lands just under MEDIUM_THRESHOLD.",
+        notes="STILL A GAP after Phase 6.5: this text has no if/when/unless-type connective at "
+        "all (it's an unconditional, mandatory arbitration clause, not a conditional one) so no "
+        "amount of condition-marker broadening helps. Rule fires alone (rule_boost=0.35, no "
+        "entity, no condition) -> raw_score=0.35 -> LOW band -> abstained to UNKNOWN because a "
+        "bare positive rule hit doesn't count as 'positive evidence for LOW'. The only lever "
+        "that would flip this is a weight/threshold change, which would be justified by nothing "
+        "but this one TEST case - deliberately not done (see corpus/eval/README.md and the "
+        "Phase 6.5 final report). Same structural pattern as "
+        "test_standalone_jury_waiver_no_rule_coverage below.",
     ),
     ClauseGroundTruth(
         case_id="test_interest_rate_change_no_rule_coverage",
@@ -130,7 +147,12 @@ RISK_TEST_HOLDOUT: tuple[ClauseGroundTruth, ...] = (
         risk_subcategory="rate_change",
         risk_level=RiskLevel.MEDIUM,
         known_gap=True,
-        notes="No rule covers interest_repayment/rate_change; current engine returns UNKNOWN.",
+        notes="PHASE_6.5 PARTIAL: a new interest_rate_change rule now covers this category and "
+        "fires correctly (no longer UNKNOWN) - the stated 'no rule coverage' problem is fixed. "
+        "But with the rule + a strong rate entity (3%, magnitude bonus) + a full condition "
+        "chain (consequence-before-trigger fix) all present, the formula now reaches HIGH "
+        "(0.76), one band above this file's MEDIUM gold label. Left as-is rather than "
+        "weight-tuned to force MEDIUM on this one TEST case - see Phase 6.5 final report.",
     ),
     ClauseGroundTruth(
         case_id="test_insurance_exclusion_no_rule_coverage",
@@ -142,7 +164,14 @@ RISK_TEST_HOLDOUT: tuple[ClauseGroundTruth, ...] = (
         risk_subcategory="exclusion",
         risk_level=RiskLevel.MEDIUM,
         known_gap=True,
-        notes="No rule covers any insurance subcategory; current engine returns UNKNOWN.",
+        notes="STILL A GAP after Phase 6.5: a new insurance_exclusion rule exists "
+        "(primary 'exclu(de/sion/...)', to deliberately avoid self-negating on its own 'not "
+        "liable'-style phrasing - see docs/PROVISIONAL_DECISIONS.md P6.9), but this exact "
+        "sentence uses 'shall not be liable for any claim' instead of the word 'exclu...' at "
+        "all, so the rule's primary term never matches. Not broadened to catch 'not liable' "
+        "phrasing specifically, since that phrase's own 'not' would risk the same self-negation "
+        "trap 'waive'/'excluding' were kept out of the negation-cue list for - a real remaining "
+        "gap, not silently patched around this one sentence.",
     ),
     ClauseGroundTruth(
         case_id="test_deductible_no_rule_coverage",
@@ -154,7 +183,12 @@ RISK_TEST_HOLDOUT: tuple[ClauseGroundTruth, ...] = (
         risk_subcategory="deductible",
         risk_level=RiskLevel.LOW,
         known_gap=True,
-        notes="No rule covers deductible; entity signal alone (weight 0.20) can't clear low_threshold without a rule hit.",
+        notes="PHASE_6.5 PARTIAL: a new insurance_deductible rule now covers this category and "
+        "fires correctly (no longer UNKNOWN) - the stated 'no rule coverage' problem is fixed. "
+        "But rule + amount entity together reach MEDIUM (0.61), not this file's LOW gold label. "
+        "A deductible is itself a real out-of-pocket cost worth surfacing, so MEDIUM is at least "
+        "as taxonomically defensible as the original LOW guess (written when no rule existed at "
+        "all) - left as-is rather than weight-tuned to force a match. See Phase 6.5 final report.",
     ),
     ClauseGroundTruth(
         case_id="test_standalone_jury_waiver_no_rule_coverage",
@@ -165,7 +199,12 @@ RISK_TEST_HOLDOUT: tuple[ClauseGroundTruth, ...] = (
         risk_subcategory="waiver",
         risk_level=RiskLevel.MEDIUM,
         known_gap=True,
-        notes="arbitration_waiver rule requires BOTH 'arbitrat' and 'waiv' terms; a standalone waiver has no rule.",
+        notes="STILL A GAP after Phase 6.5: a new standalone_rights_waiver rule now covers this "
+        "category and correctly fires (rule_matches shows a positive hit) - the stated 'no rule "
+        "coverage' problem is fixed. But this text has no entity and no condition connective, so "
+        "the rule-alone raw_score (0.35) lands in the LOW band and gets abstained to UNKNOWN by "
+        "the same structural pattern as test_arbitration_no_condition_marker above - see that "
+        "case's notes.",
     ),
     ClauseGroundTruth(
         case_id="test_termination_without_penalty_wording_variant",
@@ -174,8 +213,10 @@ RISK_TEST_HOLDOUT: tuple[ClauseGroundTruth, ...] = (
         label_kind="negative",
         risk_category=RiskCategory.TERMINATION,
         risk_level=RiskLevel.LOW,
-        known_gap=True,
-        notes="early_termination_fee rule requires the literal phrase 'early termination'; generic 'terminate...without penalty' doesn't match.",
+        notes="PHASE_6.5 FIXED: early_termination_fee's primary pattern broadened to include a "
+        "generic 'terminate this/the agreement' alternative (not requiring the literal word "
+        "'early') - the rule now fires and is correctly negated by 'without cause and without "
+        "penalty', reaching LOW.",
     ),
     ClauseGroundTruth(
         case_id="test_auto_renewal_annually_wording_variant",
@@ -186,7 +227,9 @@ RISK_TEST_HOLDOUT: tuple[ClauseGroundTruth, ...] = (
         risk_category=RiskCategory.RENEWAL,
         risk_subcategory="auto_renewal",
         risk_level=RiskLevel.MEDIUM,
-        known_gap=True,
-        notes="auto_renewal_notice rule's primary pattern requires 'automatically'/'auto-'; 'renews annually' isn't matched.",
+        notes="PHASE_6.5 FIXED: auto_renewal_notice's primary pattern broadened to include "
+        "'renews annually/each year/every year', and its secondary term broadened from bare "
+        "'notice' to also accept 'cancel(s/led/lation)' (an equally common escape-hatch "
+        "phrasing) - now correctly predicts MEDIUM.",
     ),
 )

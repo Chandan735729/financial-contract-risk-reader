@@ -238,7 +238,11 @@ def compute_signal_agreement(
     coexists with strong positive signal elsewhere (high dense similarity or
     a separate positive rule) — that combination is a genuine conflict, not
     mere silence."""
-    positive_rule = any(m.polarity == "positive" for m in rule_matches)
+    # PHASE_6.5: "conditional" (a negation reversed by an "unless"/"except"
+    # carve-out — docs/PROVISIONAL_DECISIONS.md P6.9) is risk-bearing, so it
+    # counts toward `positive_rule` here just like "positive" — it is not a
+    # genuine "confirmed safe" finding the way "negative" is.
+    positive_rule = any(m.polarity in ("positive", "conditional") for m in rule_matches)
     negative_rule = any(m.polarity == "negative" for m in rule_matches)
     rule_fired = positive_rule or negative_rule
     active = sum(
@@ -397,7 +401,9 @@ def apply_abstention_rules(
 def _select_candidate_category(
     rule_matches: Sequence[RuleMatch], matched_patterns: Sequence[PatternLike]
 ) -> tuple[RiskCategory | None, str | None]:
-    positive_rules = [m for m in rule_matches if m.polarity == "positive"]
+    # PHASE_6.5: "conditional" matches are risk-bearing (P6.9) and must be
+    # eligible to drive category selection the same as "positive".
+    positive_rules = [m for m in rule_matches if m.polarity in ("positive", "conditional")]
     if positive_rules:
         top_rule = positive_rules[0]
         return top_rule.risk_category, top_rule.risk_subcategory
@@ -464,7 +470,12 @@ def score_clause(
         trigger=trigger, condition_text=condition_text, consequence=consequence
     )
 
-    positive_rules = [m for m in rule_matches if m.polarity == "positive"]
+    # PHASE_6.5 (docs/PROVISIONAL_DECISIONS.md P6.9): "conditional" matches
+    # (a negation reversed by an "unless"/"except" carve-out) are grouped
+    # with "positive" here — both are risk-bearing and must drive
+    # rule_hit/rule_boost/corroboration. Only "negative" is confirmed-safe
+    # evidence.
+    positive_rules = [m for m in rule_matches if m.polarity in ("positive", "conditional")]
     negative_rules = [m for m in rule_matches if m.polarity == "negative"]
     rule_hit = bool(positive_rules)
     rule_boost = 1.0 if rule_hit else 0.0

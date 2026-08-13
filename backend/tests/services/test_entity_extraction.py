@@ -49,6 +49,50 @@ class TestPercentages:
         assert {e.value for e in percentages} == {"5", "10"}
 
 
+class TestPhase65PercentWordForm:
+    """PHASE_6.5 (docs/PROVISIONAL_DECISIONS.md P6.6): "5 percent" was
+    previously unsupported — only the "%" symbol matched."""
+
+    def test_percent_word_form(self):
+        entities = extract_financial_entities("A late fee of 5 percent applies.")
+        assert len(entities) == 1
+        assert entities[0].entity_type == "percentage"
+        assert entities[0].value == "5"
+        assert entities[0].unit == "%"
+        assert entities[0].raw_text == "5 percent"
+
+    def test_per_cent_two_word_form(self):
+        entities = extract_financial_entities("The interest rate is 12.5 per cent per annum.")
+        assert len(entities) == 1
+        assert entities[0].entity_type == "rate"
+        assert entities[0].value == "12.5"
+
+    def test_percent_word_form_is_case_insensitive(self):
+        entities = extract_financial_entities("A charge of 3 PERCENT applies.")
+        assert entities[0].value == "3"
+
+    def test_spelled_out_number_word_percent_still_unsupported(self):
+        # "five percent" (word-form number) remains out of scope — only the
+        # digit-led "5 percent" form is supported.
+        entities = extract_financial_entities("A charge of five percent applies.")
+        assert entities == []
+
+
+class TestPhase65QuarterlyRateQualifier:
+    def test_quarterly_word_form(self):
+        entities = extract_financial_entities("A quarterly service charge of 2% applies.")
+        # "quarterly" here qualifies "service charge," not the "2%" itself —
+        # this asserts the bare percentage is still correctly typed
+        # "percentage," not spuriously upgraded to "rate."
+        assert entities[0].entity_type == "percentage"
+
+    def test_per_quarter_rate(self):
+        entities = extract_financial_entities("The fee is 3% per quarter.")
+        rate_entities = [e for e in entities if e.entity_type == "rate"]
+        assert len(rate_entities) == 1
+        assert rate_entities[0].raw_text == "3% per quarter"
+
+
 class TestAmounts:
     def test_rupee_symbol_amount(self):
         entities = extract_financial_entities("The processing fee is ₹10,000 payable upfront.")

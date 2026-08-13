@@ -308,8 +308,9 @@ def main() -> int:
         )
     if test_summary["macro_f1"] < 0.9:
         warnings.append(
-            f"TEST macro F1 is {test_summary['macro_f1']:.2f} - expected and documented "
-            "(narrow rule coverage / empty corpus, see risk_test_holdout.py), not a regression signal."
+            f"TEST macro F1 is {test_summary['macro_f1']:.2f} - a small-sample synthetic "
+            "benchmark number, not a production accuracy claim. See risk_test_holdout.py's "
+            "per-case notes (PHASE_6.5 update) for exactly which known_gap cases remain and why."
         )
 
     print("Running abstention evaluation...")
