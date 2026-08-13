@@ -1648,3 +1648,109 @@ refresh always lands on the right state automatically, since it's derived
 from the latest poll, not from which route they happened to be on). No
 information architecture item is dropped — both states are fully
 implemented, just as two render branches of one page component.
+
+## P10.1 Upload rate limiting: in-process, per-IP, fixed-window
+
+**Location:** `backend/app/core/rate_limit.py`
+
+Security_and_Privacy_v2.md SS8 has required "Upload rate limiting per
+session/IP" since the (unavailable) v1 doc, but no phase ever implemented
+it — `ErrorCode.RATE_LIMITED` existed, mapped to a safe message on both
+backend and frontend, with nothing ever raising it. Found and closed by
+Phase 10's security audit. Implementation: a module-level
+`InMemoryRateLimiter` (fixed-window counter keyed by `request.client.host`)
+applied only to `POST /v1/documents` via a FastAPI dependency, default 20
+requests/60 seconds, both values configurable via `Settings`. Deliberately
+no Redis/external store, matching this project's established MVP
+in-process precedent (Technical_Architecture_v2.md SS9). Two known,
+accepted limitations, both documented in the module's own docstring and
+in `docs/SECURITY_AUDIT.md`: the counter is per-worker-process (a
+multi-worker/multi-instance deployment needs a shared store for a true
+global limit), and there is no `X-Forwarded-For` trust configuration (a
+reverse proxy without one configured collapses every client to one shared
+bucket). Test isolation note: `tests/conftest.py`'s `make_client` fixture
+resets the shared module-level limiter on every call, since Starlette's
+`TestClient` reports a fixed `"testclient"` IP for every request and the
+limiter would otherwise accumulate state across unrelated tests in the
+same pytest process.
+
+## P10.2 Starlette form-parsing DoS (PYSEC-2026-249): content-type gate, not a framework upgrade
+
+**Location:** `backend/app/main.py::reject_non_multipart_upload_body`
+
+`pip-audit` found the pinned starlette version (0.41.3, indirectly pinned
+by `fastapi==0.115.6`'s `starlette<0.42.0,>=0.40.0` requirement) has a
+known issue: `request.form()` enforces `max_fields`/`max_part_size` for
+`multipart/form-data` bodies but silently ignores them for
+`application/x-www-form-urlencoded` ones. `POST /v1/documents` declares
+`UploadFile = File(...)`, which triggers FastAPI's body-parsing regardless
+of the client's actual `Content-Type` header — so a client sending a huge
+`application/x-www-form-urlencoded` body to that route could reach the
+vulnerable, unbounded parsing path. Every fix version for this advisory
+is `>=1.0.0`, outside what the pinned FastAPI version allows, so closing
+it at the root needs a coordinated FastAPI major-version upgrade — out of
+scope for a security-hardening pass under "narrowly-scoped fix" judgment
+(app-wide surface area: dependency injection, response-model inference,
+exception handling, `BackgroundTasks`). Mitigated instead with a small
+ASGI middleware that rejects any non-`multipart/form-data` body on that
+one route with a 415 *before* Starlette's form-parsing ever runs — the
+upload endpoint never legitimately receives any other content type, so
+this closes the practical attack surface without touching the framework
+version. The remaining starlette advisories in the same family (unrelated
+`Host`-header/path-reconstruction issues) are accepted as residual risk —
+see `docs/SECURITY_AUDIT.md` SS4 for the full per-advisory reachability
+assessment and the recommendation to schedule a dedicated FastAPI/Starlette
+upgrade phase.
+
+## P10.3 Document deletion: implemented, matching the existing cascade schema
+
+**Location:** `backend/app/api/documents.py::delete_document`
+
+Security_and_Privacy_v2.md SS3 has required documents be "deletable by the
+access-token holder on request" since early phases; Phase 8 explicitly
+scoped this out ("integrate safely only if already part of the current
+API/security design... do not expand scope if not currently required").
+Phase 10's privacy/retention review treated this differently: the
+requirement was never optional, only deferred, and the schema's cascade
+relationships (`cascade="all, delete-orphan"` on `documents.clauses`/
+`processing_jobs`, `ondelete="CASCADE"` down through
+`clause_analyses`/`evidence_spans`/`financial_entities`/`matched_patterns`)
+already fully support it with zero new schema work — so this is judged a
+narrow, mechanical, directly-justified privacy/security fix, not a new
+product feature. `DELETE /v1/documents/{id}` behind the same
+`require_document_access` dependency every other document-scoped route
+uses; deletes the `documents` row first (cascade handles the rest), then
+best-effort removes the stored file, in that order specifically so an
+access-token holder's deletion request is honored even if the file-cleanup
+step hits an unexpected filesystem error. No frontend UI exposes this yet
+(out of scope — "do not add major product features"; the backend
+capability is the privacy requirement, a delete button is a product
+decision for a later phase).
+
+## P10.4 Known limitation: basis-substitution can bypass the grounding guard's lexical-overlap check
+
+**Location:** `backend/app/services/grounding_guard.py` (unchanged —
+documented, not fixed, per this phase's own risk/effort judgment)
+
+Found by this phase's adversarial testing pass
+(`test_18_semantically_similar_unsupported_claim_known_limitation`,
+`backend/tests/services/test_explanation_fidelity.py`): a claim can reuse
+a clause's own vocabulary and a correctly-cited number while reattaching
+it to a different, unsupported basis/object (tested case: "2% of the
+outstanding principal" reworded as "2% of the borrower's monthly loan
+payment") and still pass, because the numeric-token check (check 1) is
+satisfied trivially by the real number, and the aggregate bag-of-words
+overlap check (check 4) passes because enough *other* incidental words
+overlap — the swapped basis noun phrase alone doesn't pull the ratio below
+`_LEXICAL_OVERLAP_FLOOR`. Architecturally the same class of gap as the
+already-documented conditionality-change and affected-party-change
+limitations (`docs/EXPLANATION_GROUNDING_NOTES.md` SS6.2/SS6.3): a
+lexical/token-based verifier cannot, by construction, tell "the number is
+grounded, and so is what it's attached to" from "the number is grounded,
+but attached to something else" without proximity-windowed or semantic
+comparison. A real fix needs a materially larger, riskier change to a
+verifier that has already needed two reverts in this exact area — not
+attempted this phase; documented here, in the test itself, and in
+`docs/SECURITY_AUDIT.md` SS6 rather than risked under this phase's time
+constraints. Never affects the risk verdict, confidence, category, or
+evidence itself — only explanation prose, and only in this narrow way.

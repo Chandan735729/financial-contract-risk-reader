@@ -156,11 +156,20 @@ def make_client(
 
     Each call accepts `Settings` field overrides (e.g. `max_pdf_pages=1`) so
     individual tests can exercise limits without a shared global config.
+
+    Also resets the module-level upload rate limiter (Phase 10) on every
+    call: it's a process-global singleton keyed by client IP, and
+    Starlette's `TestClient` always reports the same fixed IP
+    ("testclient") for every request — without this reset, upload counts
+    would silently accumulate *across unrelated tests* in the same pytest
+    process and eventually trip false-positive 429s.
     """
     from app.api.deps import get_embedding_service as real_get_embedding_service
     from app.api.deps import get_vector_store as real_get_vector_store
+    from app.core.rate_limit import reset_upload_rate_limiter
 
     def make(**settings_overrides: Any) -> TestClient:
+        reset_upload_rate_limiter()
         settings = Settings(
             environment="test",
             database_url="sqlite:///:memory:",

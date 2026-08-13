@@ -129,6 +129,38 @@ class TestAuthorizationMatrix:
         assert response.status_code == 404
         assert response.json()["error"]["code"] == "access_denied"
 
+    @pytest.mark.parametrize("kind", _ENDPOINT_KINDS)
+    @pytest.mark.parametrize(
+        "malformed_header",
+        [
+            "not-a-bearer-token",  # no scheme at all
+            "Basic dXNlcjpwYXNz",  # wrong scheme
+            "Bearer",  # scheme with no token, no trailing space
+            "Bearer ",  # scheme with an empty token
+            "bearer " + "a" * 64,  # correct token, wrong-case scheme (case-sensitive per RFC 6750)
+        ],
+    )
+    def test_malformed_authorization_header_denied(self, make_client, two_documents, kind, malformed_header):
+        client = make_client()
+        doc_a, clause_a, _doc_b, _clause_b = two_documents
+
+        response = client.get(
+            _endpoint_url(kind, doc_a.id, clause_a.id), headers={"Authorization": malformed_header}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "access_denied"
+
+    def test_nonexistent_clause_id_denied_even_with_correct_document_token(self, make_client, two_documents):
+        client = make_client()
+        doc_a, _clause_a, _doc_b, _clause_b = two_documents
+
+        response = client.get(
+            f"/v1/documents/{doc_a.id}/clauses/{uuid.uuid4()}/evidence",
+            headers=_bearer(doc_a.access_token),
+        )
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "access_denied"
+
     def test_evidence_endpoint_rejects_another_documents_clause_even_with_correct_token(
         self, make_client, two_documents
     ):

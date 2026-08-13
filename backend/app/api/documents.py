@@ -18,10 +18,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile, statu
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.api.deps import get_embedding_service, get_llm_client, get_vector_store
+from app.api.deps import get_embedding_service, get_llm_client, get_vector_store, require_document_access
 from app.core.config import Settings, get_settings
 from app.core.errors import ApiError
 from app.core.logging import get_logger, log_event
+from app.core.rate_limit import enforce_upload_rate_limit
 from app.db.session import get_db, get_session_factory
 from app.models import db_models
 from app.models.enums import DocumentType, ErrorCode, ProcessingStage
@@ -82,7 +83,12 @@ def _parse(kind: str, data: bytes, settings: Settings) -> ParseResult:
     return parse_docx(data, max_items=settings.max_docx_paragraphs, min_text_chars=settings.min_text_chars)
 
 
-@router.post("", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=DocumentUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(enforce_upload_rate_limit)],
+)
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -181,3 +187,39 @@ async def upload_document(
     )
 
     return DocumentUploadResponse(document_id=document_id, access_token=access_token)
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+def delete_document(
+    document: db_models.Document = Depends(require_document_access),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """Deletes a document and all derived data — Security_and_Privacy_v2.md
+    SS3: "Documents and all derived data ... are deletable by the
+    access-token holder on request." Behind the same `require_document_access`
+    dependency every other document-scoped route uses, so this can never be
+    reached without the correct token (Phase 10 security audit).
+
+    Deletes the `documents` row first (cascading, via the existing
+    `cascade="all, delete-orphan"` ORM relationships and `ondelete="CASCADE"`
+    foreign keys, to `clauses` -> `clause_analyses` -> `evidence_spans`/
+    `financial_entities`/`matched_patterns`, and to `processing_jobs`), then
+    best-effort removes the stored original file. Never touches
+    `corpus_patterns` — no relationship path from `documents` reaches it,
+    and `matched_patterns.corpus_pattern_id` is `ondelete="RESTRICT"`, so a
+    corpus pattern referenced by a (now-deleted) match cannot itself be
+    deleted by this or any user-facing operation.
+
+    Ordered this way (DB row first, file cleanup second) so an
+    access-token holder's request to remove their data is honored even if
+    the best-effort file cleanup that follows encounters an unexpected
+    filesystem error.
+    """
+    storage_path = document.storage_path
+    db.delete(document)
+    db.flush()
+    if storage_path:
+        storage.delete_document_file(settings.upload_dir, storage_path)
+
+    log_event(logger, "document_deleted", document_id=str(document.id))

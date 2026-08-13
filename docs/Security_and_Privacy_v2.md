@@ -23,13 +23,15 @@ Unchanged in substance from v1: validate actual file structure (not extension), 
 
 ## 3. Privacy & Deletion
 
-- Documents and all derived data (`ClauseAnalysis` records, evidence spans, extracted entities) are deletable by the access-token holder on request.
-- Automatic retention window (e.g., 90 days) applies to documents, derived analysis data, and any temporarily cached embeddings for that document — corpus embeddings (the labeled reference patterns) are a separate, permanent asset and are not affected by user document retention rules.
+- Documents and all derived data (`ClauseAnalysis` records, evidence spans, extracted entities) are deletable by the access-token holder on request. **Implemented Phase 10:** `DELETE /v1/documents/{id}`, behind the same authorization dependency as every other document-scoped route; cascades through clauses/analyses/evidence/entities/matched-patterns and removes the stored file, while corpus/reference data remains structurally unreachable through it (`docs/SECURITY_AUDIT.md` SS7).
+- Automatic retention window (e.g., 90 days) applies to documents, derived analysis data, and any temporarily cached embeddings for that document — corpus embeddings (the labeled reference patterns) are a separate, permanent asset and are not affected by user document retention rules. **Not yet implemented** — this MVP has no scheduler/cron infrastructure to run a background purge job; user-initiated deletion above is the only deletion path that currently exists (documented gap, `docs/PRODUCTION_READINESS.md`).
 - Extracted financial entities and evidence spans are treated with the same sensitivity as raw document text for retention/deletion purposes — they are derived from and can reveal the same personal financial information.
 
 ## 4. Authentication & Authorization
 
 Unchanged from the original Security and Access Document: no login required for core use; unguessable per-document access tokens; optional passwordless magic-link login for saved history, post-MVP. Row-level access rules extend directly to the richer v2 schema — every `ClauseAnalysis`-related read (clauses, evidence, entities, explanations) inherits authorization from the parent `documents` row, with no direct access path that skips that check.
+
+**Token transport (Phase 8/10):** `Authorization: Bearer <token>`, decided during implementation since this document (and the unavailable original Security and Access Document) never specified a transport mechanism. A query-parameter design was tried first and replaced after Phase 8's own logging-safety test caught it leaking into request-logging output — see `docs/PROVISIONAL_DECISIONS.md` P8.1.
 
 ## 5. Secrets Management
 
@@ -50,7 +52,7 @@ Because v2 introduces more assertive, structured risk language (extracted trigge
 
 ## 8. Abuse Protection
 
-- Upload rate limiting per session/IP (unchanged from v1).
+- Upload rate limiting per session/IP (unchanged from v1). **Implemented Phase 10** — this requirement existed since early phases without ever being delivered (`ErrorCode.RATE_LIMITED` was defined and mapped to a safe message but nothing raised it) until this phase's security audit found the gap. `app/core/rate_limit.py`: an in-process, per-client-IP fixed-window counter on `POST /v1/documents` (default 20 requests / 60 seconds). Documented limitations — per-worker-process state only, and no `X-Forwarded-For` trust configuration — in `docs/SECURITY_AUDIT.md` SS5.
 - Per-document caps on LLM explanation calls, entity-extraction calls, and total processing time, to bound cost and prevent a single adversarial document from consuming disproportionate resources.
 - Prompt injection defense: the generation prompt structurally separates "facts you may reference" (Risk Engine output: category, level, confidence, evidence, entities) from "raw clause text for context," with explicit instruction that only the former may ground new claims — and the grounding guard's claim-vs-evidence check (not just claim-vs-raw-text) is what actually catches an injection attempt that tries to talk the model into a different conclusion than the Risk Engine reached.
 

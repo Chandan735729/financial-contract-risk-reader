@@ -110,6 +110,16 @@ class Settings(BaseSettings):
     generation_timeout_seconds: float = 30.0
     generation_max_output_tokens: int = 1024
 
+    # Upload rate limiting (Phase 10 — Security_and_Privacy_v2.md SS8:
+    # "Upload rate limiting per session/IP", required since the original
+    # v1 doc but never implemented until this phase; see
+    # docs/PROVISIONAL_DECISIONS.md "Phase 10: upload rate limiting"). A
+    # deliberately simple in-process fixed-window counter, not a new
+    # external dependency — consistent with this project's established
+    # MVP in-process precedent (Technical_Architecture_v2.md SS9).
+    upload_rate_limit_max_requests: int = 20
+    upload_rate_limit_window_seconds: float = 60.0
+
     @field_validator("log_level")
     @classmethod
     def _validate_log_level(cls, value: str) -> str:

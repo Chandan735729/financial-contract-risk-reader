@@ -230,6 +230,46 @@ class TestSeventeenScenarios:
         assert outcome.attempts == 2
         assert outcome.failure_category == "grounding_failed_after_retry"
 
+    def test_18_semantically_similar_unsupported_claim_known_limitation(self):
+        # KNOWN LIMITATION, found by this Phase 10 security audit (not
+        # previously documented) and recorded here rather than silently
+        # left undiscovered: reuses the clause's own vocabulary
+        # ("prepayment", "penalty", "borrower", and — coincidentally, via
+        # the clause's own "the loan is repaid" phrase — "loan") but
+        # reattaches the correctly-cited "2%" to a different, unsupported
+        # basis (the borrower's *monthly payment*, not the *outstanding
+        # principal*). Check 1 passes trivially (the number is real);
+        # check 4 (aggregate bag-of-words overlap, `_LEXICAL_OVERLAP_FLOOR`)
+        # also passes, because enough *other* incidental words overlap that
+        # the swapped basis noun phrase doesn't pull the ratio below the
+        # floor. This is architecturally the same class of gap as
+        # test_12's conditionality limitation: whole-sentence lexical
+        # overlap cannot detect that a number's *basis/object* was swapped
+        # when unrelated vocabulary otherwise overlaps enough. A real fix
+        # needs proximity-windowed (number-to-basis) comparison, not
+        # whole-sentence bag-of-words — a materially larger, riskier change
+        # to a verifier that has already needed two reverts in this exact
+        # area (docs/EXPLANATION_GROUNDING_NOTES.md SS6.2/SS6.3), so it is
+        # documented here, in docs/SECURITY_AUDIT.md, and in
+        # docs/PROVISIONAL_DECISIONS.md rather than attempted under this
+        # phase's time constraints against this file's demonstrated
+        # regression history.
+        result = _supported("The prepayment penalty is 2% of the borrower's monthly loan payment")
+        assert result is True  # documents the current (imperfect) behavior
+
+    def test_19_contradicts_risk_engine_verdict_without_safe_language(self):
+        # Phase 10 security audit: contradicts the HIGH verdict by
+        # reframing it as trivial, without using any of the exact banned/
+        # risk-minimizing phrases test_09 already covers -- a slightly
+        # different wording of the same attack (Grounding_and_Evidence_Spec.md
+        # SS4's claim-vs-evidence check, not the language-policy phrase
+        # table, is what catches this: "a routine administrative note" is
+        # not itself a fact anywhere in FACTS).
+        assert (
+            _supported("This is just a routine administrative note and does not affect the loan terms")
+            is False
+        )
+
     def test_17_final_fallback_state(self):
         client = _ScriptedClient(
             outputs=[
