@@ -97,6 +97,19 @@ class Settings(BaseSettings):
     # (Technical_Architecture_v2.md SS6).
     chroma_persist_dir: str = "./data/chroma"
 
+    # Generation Service / Grounding Guard (Grounding_and_Evidence_Spec.md,
+    # Security_and_Privacy_v2.md SS8 "Per-document caps ... to bound cost and
+    # prevent a single adversarial document from consuming disproportionate
+    # resources"). The model ID and prompt version are versioned code
+    # constants (`generation_config.py`), not env-tunable, so every
+    # `model_version` value on a persisted `clause_analyses` row is
+    # reproducible from source — same rationale as `RISK_ENGINE_VERSION`
+    # being a code constant rather than a setting.
+    generation_max_retries: int = 1
+    generation_max_calls_per_document: int = 60
+    generation_timeout_seconds: float = 30.0
+    generation_max_output_tokens: int = 1024
+
     @field_validator("log_level")
     @classmethod
     def _validate_log_level(cls, value: str) -> str:

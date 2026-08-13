@@ -31,6 +31,7 @@ python ../corpus/eval/run_retrieval_eval.py  # loads the embedding model — slo
 python ../corpus/eval/run_entity_eval.py
 python ../corpus/eval/run_condition_eval.py
 python ../corpus/eval/run_evidence_eval.py
+python ../corpus/eval/run_generation_eval.py
 python ../corpus/eval/run_risk_engine_eval.py
 python ../corpus/eval/run_abstention_eval.py
 python ../corpus/eval/run_calibration_eval.py
@@ -39,8 +40,9 @@ python ../corpus/eval/run_threshold_tuning.py
 ```
 
 `run_all.py` is the one to run after every pipeline-affecting change. It
-covers segmentation, entity, condition, evidence, risk classification
-(DEV + TEST + adversarial), abstention, and calibration; it deliberately
+covers segmentation, entity, condition, evidence, generation/grounding
+guard, risk classification (DEV + TEST + adversarial), abstention, and
+calibration; it deliberately
 excludes retrieval/ablation/threshold-tuning (slower setup — an embedding
 model and, for retrieval, an in-memory Chroma collection) so it stays fast
 enough to run routinely. It exits non-zero on a **hard gate** failure (see
@@ -58,6 +60,7 @@ corpus/eval/
     entity_ground_truth.py         # DEV + TEST
     condition_ground_truth.py      # DEV + TEST
     evidence_ground_truth.py       # DEV + TEST, plus integrity probes
+    generation_ground_truth.py     # DEV + TEST + adversarial, scripted LLM outputs (no live calls)
     abstention_ground_truth.py     # ambiguous vs. clear-boundary cases
     adversarial_risk_cases.py      # Phase 6 spec cases A-I + one supplementary gap
     risk_test_holdout.py           # held-out risk-classification TEST split
@@ -190,6 +193,7 @@ the identity function.
 | Entities | `run_entity_eval.py` | P/R/F1 overall and per type, value/span correctness, false-positive rate |
 | Conditions | `run_condition_eval.py` | per-field exact-match accuracy, chain-completeness accuracy |
 | Evidence | `run_evidence_eval.py` | evidence P/R/F1, citation correctness, fabrication-leak count (must be 0) |
+| Generation / Grounding Guard | `run_generation_eval.py` | grounded explanation rate, fallback rate, unsupported claim rate, citation correctness, generation failure rate, unsupported-claim-leak count (must be 0) |
 | Risk classification | `run_risk_engine_eval.py` | P/R/F1 per level, macro F1, HIGH precision/recall, FP/FN rate, DEV vs. TEST vs. adversarial |
 | Abstention | `run_abstention_eval.py` | UNKNOWN precision/recall, false-abstention rate, ambiguity-capture rate |
 | Calibration | `run_calibration_eval.py` | reliability bins, ECE (overall/by level), isotonic fit, DEV→TEST transfer, risk×confidence cross-tab |
@@ -203,8 +207,10 @@ the identity function.
 - **Hard gates** (fail the run, exit code 1): zero fabrication leaks in the
   evidence-integrity probes; every HIGH/MEDIUM result carries verified
   evidence; the DEV split doesn't regress below its established macro F1
-  floor; no unhandled exception. These hold regardless of benchmark size —
-  they're safety/regression invariants, not accuracy claims.
+  floor; zero unsupported-claim leaks in the generation/grounding guard
+  evaluation; every simulated LLM-call-failure probe correctly falls back to
+  the safe state; no unhandled exception. These hold regardless of benchmark
+  size — they're safety/regression invariants, not accuracy claims.
 - **Provisional warnings** (printed, non-gating): TEST-split accuracy,
   calibration ECE, segmentation/retrieval numbers. Phase 6 spec: *"If
   thresholds are not yet scientifically justified: mark them as provisional

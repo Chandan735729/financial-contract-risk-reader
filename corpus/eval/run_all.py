@@ -13,6 +13,11 @@ benchmark is:
   - 100% of HIGH/MEDIUM results carry verified evidence (DEV+TEST)
   - the DEV split (the set `risk_engine_v1` was tuned against) does not
     regress below its established macro F1 floor
+  - zero unsupported-claim leaks in the generation/grounding guard
+    evaluation (Grounding_and_Evidence_Spec.md SS7) — an explanation with an
+    unsupported claim must never be marked grounded
+  - every simulated LLM-call-failure probe correctly falls back to the safe
+    state (Grounding_and_Evidence_Spec.md SS5)
   - the harness itself runs to completion without an unhandled exception
 
 **Everything else is a provisional development warning, not a gate**
@@ -54,6 +59,7 @@ from corpus.eval.datasets.evidence_ground_truth import (  # noqa: E402
     EVIDENCE_CLAUSE_CASES,
     EVIDENCE_INTEGRITY_PROBES,
 )
+from corpus.eval.datasets.generation_ground_truth import GENERATION_EVAL_CASES  # noqa: E402
 from corpus.eval.datasets.risk_test_holdout import RISK_TEST_HOLDOUT  # noqa: E402
 from corpus.eval.metrics.abstention_metrics import evaluate_abstention  # noqa: E402
 from corpus.eval.metrics.calibration_metrics import compute_reliability  # noqa: E402
@@ -63,7 +69,12 @@ from corpus.eval.metrics.evidence_metrics import (  # noqa: E402
     evaluate_evidence_clauses,
     evaluate_integrity_probes,
 )
+from corpus.eval.metrics.generation_metrics import evaluate_generation_cases  # noqa: E402
 from corpus.eval.reports.error_analysis import KNOWN_FINDINGS, summarize_by_category  # noqa: E402
+from corpus.eval.run_generation_eval import _run_case as _run_generation_case  # noqa: E402
+from corpus.eval.run_generation_eval import (  # noqa: E402
+    _run_generation_failure_probes,
+)
 from corpus.eval.versioning import build_run_metadata, timestamped_output_path  # noqa: E402
 from tests.fixtures.risk_engine_benchmark import BENCHMARK_CASES as DEV_RISK_CASES  # noqa: E402
 from tests.fixtures.segmentation_benchmark import (  # noqa: E402
@@ -147,6 +158,26 @@ def _run_evidence() -> dict:
         "citation_correctness_rate": clause_report.citation_correctness_rate,
         "integrity_fabrication_leak_count": integrity.fabrication_leak_count,
         "integrity_probe_count": integrity.probe_count,
+    }
+
+
+def _run_generation() -> dict:
+    """Grounding_and_Evidence_Spec.md SS7. Every case uses a scripted fake
+    LLM client (`corpus.eval.run_generation_eval`) -- no live Anthropic call
+    is made by the regression gate."""
+    results = [_run_generation_case(case) for case in GENERATION_EVAL_CASES]
+    report = evaluate_generation_cases(results)
+    failure_handled, failure_probe_count = _run_generation_failure_probes()
+    return {
+        "case_count": report.case_count,
+        "grounded_explanation_rate": report.grounded_explanation_rate,
+        "fallback_rate": report.fallback_rate,
+        "unsupported_claim_rate": report.unsupported_claim_rate,
+        "citation_correctness_rate": report.citation_correctness_rate,
+        "unsupported_claim_leak_count": report.unsupported_claim_leak_count,
+        "incorrect_case_ids": list(report.incorrect_case_ids),
+        "generation_failure_probes_handled": failure_handled,
+        "generation_failure_probe_count": failure_probe_count,
     }
 
 
@@ -285,6 +316,31 @@ def main() -> int:
     if report["evidence"]["integrity_fabrication_leak_count"] > 0:
         hard_failures.append(
             "HARD GATE FAILED: fabricated/wrong-offset evidence verified (fabrication_leak_count > 0)"
+        )
+
+    print("Running generation/grounding guard evaluation...")
+    report["generation"] = _run_generation()
+    print(
+        f"  grounded_explanation_rate={report['generation']['grounded_explanation_rate']:.2%} "
+        f"unsupported_claim_leak_count={report['generation']['unsupported_claim_leak_count']}"
+    )
+    if report["generation"]["unsupported_claim_leak_count"] > 0:
+        hard_failures.append(
+            "HARD GATE FAILED: an explanation with an unsupported claim was marked grounded "
+            "(unsupported_claim_leak_count > 0)"
+        )
+    if (
+        report["generation"]["generation_failure_probes_handled"]
+        != report["generation"]["generation_failure_probe_count"]
+    ):
+        hard_failures.append(
+            "HARD GATE FAILED: a simulated LLM call failure did not correctly fall back to the "
+            "safe state (Grounding_and_Evidence_Spec.md SS5)"
+        )
+    if report["generation"]["incorrect_case_ids"]:
+        hard_failures.append(
+            "HARD GATE FAILED: generation eval case(s) did not match the expected grounded/"
+            f"fallback outcome: {report['generation']['incorrect_case_ids']}"
         )
 
     print("Running risk classification (DEV, TEST, ADVERSARIAL)...")
