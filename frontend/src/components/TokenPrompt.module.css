@@ -1,0 +1,38 @@
+.form {
+  max-width: 420px;
+  margin: var(--space-8) auto;
+  background: var(--paper-000);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  padding: var(--space-6);
+}
+
+.label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+
+.hint {
+  color: var(--ink-700);
+  font-size: 0.875rem;
+  margin-bottom: var(--space-3);
+}
+
+.input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-4);
+}
+
+.submitButton {
+  background: var(--signal-blue);
+  color: var(--paper-000);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-6);
+  font-weight: 600;
+  cursor: pointer;
+}

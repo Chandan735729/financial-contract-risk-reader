@@ -1,0 +1,92 @@
+.wrapper {
+  background: var(--paper-000);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.heading {
+  font-size: 1.125rem;
+  margin-bottom: 0;
+}
+
+.total {
+  color: var(--ink-700);
+  font-size: 0.875rem;
+  margin-top: 0;
+}
+
+.tiles {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 2px solid transparent;
+}
+
+.count {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.label {
+  font-size: 0.8125rem;
+  margin-top: var(--space-1);
+}
+
+.high {
+  background: var(--risk-red-bg);
+  color: var(--risk-red);
+}
+
+.medium {
+  background: var(--risk-amber-bg);
+  color: var(--risk-amber);
+}
+
+.low {
+  background: var(--risk-green-bg);
+  color: var(--risk-green);
+}
+
+/* `--risk-unknown` (#7C8A9C) is ~3.5:1 against white/paper-100 — enough
+   for the large bold `.count` figure (WCAG 1.4.3 "large text" needs 3:1)
+   and for the border/background (1.4.11 non-text contrast, also 3:1), but
+   not for the smaller `.label` text below it (needs 4.5:1) — so the label
+   uses `--ink-700` instead, kept dark enough to read at any size, while
+   the tile's identity as "unknown" still comes through via color, the
+   dashed border, and the label text itself ("Unknown"), never color alone. */
+.unknown {
+  background: var(--risk-unknown-bg);
+  color: var(--risk-unknown);
+  border-style: dashed;
+  border-color: var(--risk-unknown);
+}
+
+.unknown .label {
+  color: var(--ink-700);
+}
+
+.unknownNote {
+  font-size: 0.8125rem;
+  color: var(--ink-700);
+  margin: var(--space-3) 0 0 0;
+}
+
+@media (max-width: 600px) {
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

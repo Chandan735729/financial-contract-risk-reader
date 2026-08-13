@@ -1,0 +1,32 @@
+.wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-700);
+  font-size: 0.875rem;
+}
+
+.label {
+  white-space: nowrap;
+}
+
+.dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.dotFilled,
+.dotEmpty {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dotFilled {
+  background: var(--ink-700);
+}
+
+.dotEmpty {
+  background: var(--ink-200);
+}

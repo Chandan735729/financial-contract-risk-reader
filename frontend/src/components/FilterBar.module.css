@@ -1,0 +1,49 @@
+.wrapper {
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  background: var(--paper-000);
+}
+
+.legend {
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-700);
+  padding: 0;
+}
+
+.levelGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.checkboxLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.9375rem;
+  cursor: pointer;
+}
+
+.categoryGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.selectLabel {
+  font-size: 0.9375rem;
+}
+
+.categoryGroup select {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-sm);
+}

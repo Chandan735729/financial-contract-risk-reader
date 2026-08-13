@@ -1,0 +1,136 @@
+/* Design tokens — Frontend_Specification_v2.md §2/§3/§5/§9.
+ *
+ * The original (v1) Frontend Specification Document that this file's
+ * header comment says "still applies and is not repeated here" is not
+ * present anywhere in this repository (see docs/PROVISIONAL_DECISIONS.md
+ * "Phase 9: v1 design system unavailable, tokens defined fresh"). Every
+ * token below not given an explicit value in Frontend_Specification_v2.md
+ * (only `--risk-unknown: #7C8A9C` is) is therefore a fresh, documented,
+ * deliberately small choice, not a recovered v1 value — kept to the exact
+ * token names Frontend_Specification_v2.md references (`risk-red`,
+ * `risk-amber`, `risk-green`, `ink-400`, `ink-700`, `paper-000`,
+ * `paper-100`, `signal-blue`) so this file is a faithful implementation of
+ * what v2 actually specifies, not an invented parallel system.
+ */
+
+:root {
+  /* Neutral scale ("ink") */
+  --ink-900: #14181f;
+  --ink-700: #4b5563;
+  --ink-400: #7c8a9c;
+  --ink-200: #d8dce3;
+  --ink-100: #eceef2;
+
+  /* Surfaces ("paper") */
+  --paper-000: #ffffff;
+  --paper-100: #f5f6f8;
+
+  /* Risk semantics — reserved for risk level only (Frontend_Specification_v2.md
+     §9: "Risk colors remain reserved for risk"). Never reused for confidence,
+     entity highlighting, or ordinary UI controls. */
+  --risk-red: #b3261e;
+  --risk-red-bg: #fbeae9;
+  --risk-amber: #91530a;
+  --risk-amber-bg: #fbf1de;
+  --risk-green: #1e6b3c;
+  --risk-green-bg: #eaf5ee;
+  --risk-unknown: #7c8a9c; /* = ink-400, per Frontend_Specification_v2.md §2 */
+  --risk-unknown-bg: #f5f6f8; /* = paper-100 */
+
+  /* A single reserved accent for normal application controls, links, and
+     fact-highlighting (financial entities) — never a risk color
+     (Frontend_Specification_v2.md §9, Phase 9 spec §20). */
+  --signal-blue: #1d4ed8;
+  --signal-blue-bg: #eaf0fd;
+
+  --focus-ring: #1d4ed8;
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+}
+
+body {
+  background: var(--paper-100);
+  color: var(--ink-900);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  line-height: 1.25;
+  margin: 0 0 var(--space-2) 0;
+}
+
+p {
+  margin: 0 0 var(--space-3) 0;
+}
+
+a {
+  color: var(--signal-blue);
+}
+
+button,
+input {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Visible on every focusable element, not just links/buttons — a single
+   consistent focus treatment across the app (Phase 9 spec §18). */
+:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  background: var(--paper-000);
+  color: var(--ink-900);
+  padding: var(--space-2) var(--space-4);
+  border: 2px solid var(--signal-blue);
+  border-radius: var(--radius-sm);
+}
+
+.skip-link:focus {
+  left: var(--space-4);
+  top: var(--space-4);
+}

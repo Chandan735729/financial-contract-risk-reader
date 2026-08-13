@@ -1,0 +1,46 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.875rem;
+  border: 2px solid transparent;
+  white-space: nowrap;
+}
+
+.glyph {
+  font-size: 0.75rem;
+}
+
+.high {
+  background: var(--risk-red-bg);
+  color: var(--risk-red);
+  border-color: var(--risk-red);
+}
+
+.medium {
+  background: var(--risk-amber-bg);
+  color: var(--risk-amber);
+  border-color: var(--risk-amber);
+}
+
+.low {
+  background: var(--risk-green-bg);
+  color: var(--risk-green);
+  border-color: var(--risk-green);
+}
+
+/* Dashed, not solid — Frontend_Specification_v2.md §2: UNKNOWN must never
+   visually read as calmer/safer than LOW. Text color is `--ink-700`, not
+   `--risk-unknown` (#7C8A9C only reaches ~3.5:1 against white — enough for
+   the border/background per WCAG 1.4.11, not for this badge's 14px label
+   per 1.4.3); `--risk-unknown` still carries the badge's color identity
+   via the border and background tint. */
+.unknown {
+  background: var(--risk-unknown-bg);
+  color: var(--ink-700);
+  border-style: dashed;
+  border-color: var(--risk-unknown);
+}

@@ -1591,3 +1591,60 @@ containing a mid-sentence abbreviation period. Worked around at the test
 level (the scripted response avoids the "Rs." + comma pattern); left
 unfixed here since Phase 8's brief is orchestration/integration only and
 explicitly excludes changing `grounding_guard.py`.
+
+## P9.1 v1 design system unavailable — tokens defined fresh, kept minimal
+
+**Location:** `frontend/src/app/globals.css`
+
+Frontend_Specification_v2.md's own header says "the original Frontend
+Specification Document's design system (colors, typography, component
+base styles) still applies and is not repeated here" — but that v1
+document does not exist anywhere in this repository (same class of gap as
+the "original Security and Access Document" referenced throughout
+Security_and_Privacy_v2.md). Only one token has an explicit value anywhere
+in the available docs: `--risk-unknown: #7C8A9C`. Every other named token
+(`risk-red`, `risk-amber`, `risk-green`, `ink-400`, `ink-700`, `paper-000`,
+`paper-100`, `signal-blue`) is used *by name* in Frontend_Specification_v2.md
+without a value, so `globals.css` defines a small, coherent palette under
+exactly those names — not a larger invented system, and not a guess at
+what v1 "really" looked like. If the real v1 document surfaces later, only
+`globals.css`'s `:root` block needs updating; every component consumes
+tokens by CSS custom-property name, never a hardcoded color.
+
+## P9.2 Financial-entity highlighting inside evidence excerpts is substring-matched, not offset-based
+
+**Location:** `frontend/src/lib/highlightEntities.ts`
+
+Frontend_Specification_v2.md §5 asks for financial entities to be "visually
+distinguished within the excerpt." The public `FinancialEntity` schema
+(`API_and_Data_Models.md` §2, `backend/app/models/schemas.py`) carries
+`type`/`value`/`unit`/`raw_text` but no character offset into the clause or
+evidence span — offsets exist only internally via `evidence_span_id` on the
+ORM row, never serialized to the API. Rather than adding a new backend
+field (out of scope — Phase 9 is frontend-only, "do not redesign backend
+contracts"), highlighting is done by a best-effort substring search for
+each entity's `raw_text` within the evidence excerpt it's rendered inside.
+This can mis-highlight if the same `raw_text` string legitimately appears
+more than once in one excerpt, or fail to highlight if whitespace
+normalization differs — a known, minor, documented limitation, not a
+silent gap.
+
+## P9.3 Processing and report share one route
+
+**Location:** `frontend/src/app/documents/[id]/page.tsx`
+
+Phase 9 spec §1 lists "processing page" and "report page" as separate
+items in the information architecture. Implemented as one route
+(`/documents/{id}`) with internal view-state driven by the polled
+`ProcessingStatus.stage` (processing view while not `COMPLETED`/`FAILED`,
+report view once the report loads) rather than two distinct URLs with a
+client-side redirect between them. Reasons: (1) a navigation between two
+routes would need to re-pass the access token, and the token intentionally
+never appears in the URL (Phase 9 spec §3) — passing it through router
+state instead of a URL adds complexity a single route avoids entirely; (2)
+the two states are genuinely the same "document," not two different
+resources, so one URL matches how a user would think of it (bookmark/
+refresh always lands on the right state automatically, since it's derived
+from the latest poll, not from which route they happened to be on). No
+information architecture item is dropped — both states are fully
+implemented, just as two render branches of one page component.

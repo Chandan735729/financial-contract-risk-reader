@@ -1,0 +1,139 @@
+.card {
+  background: var(--paper-000);
+  border: 1px solid var(--ink-200);
+  border-left: 4px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.unknownCard {
+  border-left-style: dashed;
+  border-left-color: var(--risk-unknown);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: var(--space-3);
+  cursor: pointer;
+  text-align: left;
+  flex-wrap: wrap;
+}
+
+.headerLeft,
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.category {
+  color: var(--ink-700);
+  font-size: 0.875rem;
+}
+
+.chevron {
+  font-size: 1.25rem;
+  color: var(--ink-400);
+  width: 1.5rem;
+  text-align: center;
+}
+
+.title {
+  margin-top: 0;
+  margin-bottom: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.subcategory {
+  font-weight: 400;
+  color: var(--ink-700);
+}
+
+.unknownLeadIn {
+  color: var(--ink-700);
+  font-size: 0.9375rem;
+  margin: var(--space-2) 0 0 0;
+}
+
+.content {
+  margin-top: var(--space-3);
+}
+
+.abstainBox {
+  background: var(--risk-unknown-bg);
+  border: 1px dashed var(--risk-unknown);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.abstainBox .unknownLeadIn {
+  margin-top: 0;
+  font-weight: 600;
+  color: var(--ink-900);
+}
+
+.abstainReason {
+  color: var(--ink-700);
+  font-size: 0.9375rem;
+  margin: var(--space-2) 0 0 0;
+}
+
+.explanation {
+  font-size: 0.9375rem;
+  color: var(--ink-900);
+  margin: 0;
+}
+
+.fallback {
+  font-size: 0.9375rem;
+  color: var(--ink-700);
+  font-style: italic;
+  margin: 0;
+  background: var(--paper-100);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}
+
+.sourceText {
+  margin-top: var(--space-4);
+  font-size: 0.875rem;
+}
+
+.sourceText summary {
+  cursor: pointer;
+  color: var(--signal-blue);
+}
+
+.sourceText p {
+  white-space: pre-wrap;
+  color: var(--ink-700);
+  margin-top: var(--space-2);
+}
+
+.unavailable {
+  border-left-color: var(--ink-400);
+}
+
+.unavailableText {
+  /* ink-700, not ink-400 -- ink-400 fails WCAG AA (4.5:1) as body text. */
+  color: var(--ink-700);
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

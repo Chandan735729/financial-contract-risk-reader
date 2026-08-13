@@ -1,0 +1,81 @@
+/* Secondary text throughout this file uses `--ink-700`, not `--ink-400` —
+   ink-400 (#7C8A9C) is ~3.5:1 against white, below WCAG AA's 4.5:1 for
+   normal-size text; ink-700 clears it comfortably (~7.5:1). */
+
+.wrapper {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--ink-200);
+}
+
+.heading {
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-700);
+  margin-bottom: var(--space-2);
+}
+
+.empty {
+  color: var(--ink-700);
+  font-size: 0.9375rem;
+  margin: 0;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.excerpt {
+  font-size: 0.9375rem;
+  color: var(--ink-900);
+  background: var(--paper-100);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}
+
+.pageNumber {
+  color: var(--ink-700);
+  font-size: 0.8125rem;
+}
+
+.entity {
+  background: var(--signal-blue-bg);
+  color: var(--ink-900);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--signal-blue);
+  text-decoration-thickness: 2px;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+.entityList {
+  margin: var(--space-3) 0 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+}
+
+.entityRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-size: 0.875rem;
+}
+
+.entityType {
+  color: var(--ink-700);
+  margin: 0;
+}
+
+.entityRow dd {
+  margin: 0;
+  font-weight: 600;
+  color: var(--ink-900);
+}
