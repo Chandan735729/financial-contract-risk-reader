@@ -1754,3 +1754,289 @@ attempted this phase; documented here, in the test itself, and in
 `docs/SECURITY_AUDIT.md` SS6 rather than risked under this phase's time
 constraints. Never affects the risk verdict, confidence, category, or
 evidence itself — only explanation prose, and only in this narrow way.
+
+## P11.1 FastAPI/Starlette upgrade: minimal justified jump, not the latest
+
+**Location:** `backend/requirements.txt`
+
+Phase 10 found `starlette==0.41.3` (pinned indirectly by `fastapi==0.115.6`'s
+`starlette<0.42.0,>=0.40.0` requirement) carrying 7 known advisories, one
+reachable (PYSEC-2026-249), and documented that closing them at the root
+needed a coordinated FastAPI upgrade rather than a starlette-only bump,
+recommending it as dedicated future work. Phase 11 did that work.
+Investigated (not guessed) the minimal viable jump before upgrading:
+downloaded and inspected several FastAPI wheels' `METADATA` directly
+(`pip download --no-deps`) to find exactly where the `starlette<1.0.0`
+upper-bound cap was lifted — `fastapi==0.133.0` ("Add support for
+Starlette 1.0.0+", PR #14987) is the first version that allows starlette
+1.x at all, so that is the version pinned, not the latest available
+(0.141.1 at the time) — deliberately the smallest jump that fixes the
+issue, not a broad "upgrade everything" pass. Checked every FastAPI
+release between 0.115.6 and 0.133.0 with a "Breaking Changes" entry
+(0.125.0 Python 3.8 drop, 0.127.0/0.128.0 pydantic.v1 deprecation/removal,
+0.129.0 Python 3.9 drop, 0.131.0 `ORJSONResponse`/`UJSONResponse`
+deprecation, 0.132.0 `strict_content_type` JSON checking) against this
+codebase's actual usage — none apply (already Python 3.11, already
+pydantic v2 only, never uses `ORJSONResponse`/`UJSONResponse`, and no
+endpoint takes a JSON request body that `strict_content_type` could
+affect). `starlette` itself is pinned explicitly to `1.6.0` (latest at
+upgrade time) rather than left to fastapi's own unbounded
+`starlette>=0.40.0` requirement, so the exact resolved version is
+reproducible and gets every fix in the 1.x line, not just the one
+advisory. `pydantic` (`2.10.4`) and `python-multipart` (`0.0.32`) needed
+no change — both already satisfy fastapi 0.133.0's minimums
+(`pydantic>=2.7.0`, `python-multipart>=0.0.18`).
+
+Two source changes followed directly from the upgrade (not new behavior,
+just following starlette 1.x's renamed status-code constants):
+`status.HTTP_413_REQUEST_ENTITY_TOO_LARGE` → `HTTP_413_CONTENT_TOO_LARGE`
+and `status.HTTP_422_UNPROCESSABLE_ENTITY` → `HTTP_422_UNPROCESSABLE_CONTENT`
+(`backend/app/api/documents.py`, `backend/app/core/errors.py`) — the old
+names still resolved correctly (same integer values) but emitted a
+`StarletteDeprecationWarning` on every use.
+
+Verified, not assumed: `pip-audit` against the post-upgrade
+`requirements.txt` no longer flags starlette at all (all 7 advisories
+closed); full 674-test backend suite passes; `ruff`/`mypy` clean. One
+`test_pipeline_logging_safety.py` failure was observed in exactly 1 of 6
+full-suite runs around the time of this upgrade, but reproduced as a pass
+in isolation and in 4 consecutive full-suite re-runs afterward —
+concluded to be pre-existing, rare test-order/timing flakiness unrelated
+to the dependency change, not a regression, and not chased further given
+its low reproduction rate.
+
+## P11.2 Automatic retention: standalone script, not an in-process scheduler
+
+**Location:** `backend/app/services/retention_service.py`,
+`backend/scripts/run_retention_cleanup.py`
+
+Security_and_Privacy_v2.md SS3 requires an automatic retention window;
+Phase 8 shipped only user-initiated deletion. Rather than add an
+in-process scheduler (APScheduler, a background asyncio loop, etc.) to a
+codebase that has deliberately stayed single-worker/no-new-infrastructure
+throughout (Technical_Architecture_v2.md SS9), the cleanup logic is a
+plain, testable function (`run_retention_cleanup`) invoked by a standalone
+CLI script meant to be triggered by external cron/a platform's scheduled-
+task feature — the same "a scheduler is deployment infrastructure, not
+application code" reasoning already applied to this project's other
+operational concerns. The deletion logic itself was extracted from the
+Phase 10 `DELETE /v1/documents/{id}` endpoint into a shared
+`document_deletion_service.delete_document` function so user-initiated and
+automatic deletion can never drift apart. Idempotent (a document already
+deleted is simply not a candidate on the next run), retry-safe and
+partial-failure-isolated (each document's deletion runs inside its own
+`Session.begin_nested()` SAVEPOINT, the same pattern `risk_scoring_service`
+and `generation_pipeline_service` already use), and observable (an
+allowlisted `log_event` per deletion/failure plus a summary, and — Phase
+11 — an operational metrics counter per outcome, see P11.4).
+`document_retention_days` defaults to 90, matching the SS3 example value.
+
+## P11.3 Health endpoint split: liveness unchanged, readiness added as a new route
+
+**Location:** `backend/app/api/health.py`
+
+`GET /health` (liveness — "is the process running") is kept exactly as it
+was rather than repurposed, so no existing consumer or test breaks. A new
+`GET /health/ready` (readiness — "can this instance serve traffic right
+now") checks the two dependencies a request actually needs: PostgreSQL
+(`SELECT 1`, cheap and touches no application table) and the Chroma vector
+store (a new `ChromaVectorStore.ping()` wrapping the client's `heartbeat()`
+call, independent of any specific taxonomy/corpus collection so it works
+even against a freshly-created persistence directory). Configuration is
+not separately probed at request time: `Settings` already fails fast at
+process startup (`_validate_production_requirements`), so there is nothing
+further a readiness check could catch that startup didn't already catch.
+Both checks report only a boolean per dependency — never an exception
+message or any other internal detail — because a readiness probe is
+routinely polled unauthenticated by infrastructure, exactly like `/health`
+already is.
+
+## P11.4 Operational metrics: in-process counters, no new dependency
+
+**Location:** `backend/app/core/metrics.py`, `GET /metrics`
+
+Same "MVP in-process, no new distributed infrastructure" precedent as the
+Phase 10 rate limiter: a small thread-safe in-process registry of named
+counters and duration statistics, not a `prometheus_client` dependency or
+an external metrics backend, since nothing in this repository consumes a
+Prometheus-format scrape target today and adding one would be exactly the
+kind of premature infrastructure this phase was told not to build. Every
+tracked name is a fixed, known constant (`DOCUMENTS_UPLOADED`,
+`PIPELINE_JOBS_COMPLETED`/`_FAILED`, `PIPELINE_JOB_DURATION_SECONDS`,
+`EXPLANATIONS_GENERATED`/`_GENERATION_FAILED`/`_FALLBACK_USED`,
+`UPLOAD_RATE_LIMIT_REJECTIONS`, `RETENTION_DOCUMENTS_DELETED`/
+`_DELETION_FAILED`, `RETENTION_CLEANUP_RUNS`) — there is no code path that
+lets a per-document identifier, an explanation string, or any other
+content-shaped value become a metric name or value, so unlike
+`app/core/logging.py`'s field allowlist, there is nothing here that needs
+redacting. `GET /metrics` is unauthenticated, matching `/health` and
+`/health/ready`: this MVP's only auth mechanism is a per-document access
+token, which an operator's monitoring/scraping tooling cannot reasonably
+be expected to hold, and the endpoint reveals only aggregate operational
+volume. Explicitly documented, not silently accepted: like the rate
+limiter, this registry is per-process and resets on restart — a real
+multi-instance deployment needs a shared metrics backend to aggregate
+across instances, which is out of scope for this MVP.
+
+## P11.5 Trusted-proxy IP resolution: exactly one hop, opt-in, rightmost entry only
+
+**Location:** `backend/app/core/rate_limit.py::resolve_client_ip`,
+`Settings.trust_proxy_headers`
+
+Phase 10 documented (docs/SECURITY_AUDIT.md SS5) that the upload rate
+limiter never resolved `X-Forwarded-For`, so behind any reverse proxy
+every request appears to share the proxy's IP, degrading the limiter to a
+single shared bucket. Phase 11 closes this, but conservatively: the header
+is only ever consulted when `Settings.trust_proxy_headers=True`, and even
+then only its **rightmost** entry is used, never the first. This matters
+because `X-Forwarded-For` accumulates left-to-right as a request passes
+through hops (`client-claimed, proxy1-observed, proxy2-observed, ...`) —
+the leftmost value can be set to anything by whoever originates the
+request, including a value injected before it ever reaches a trusted
+proxy, while the rightmost value is the one the nearest trusted hop
+actually observed as its own direct peer. Trusting the rightmost entry
+models exactly **one** trusted reverse-proxy hop in front of the app,
+matching this project's documented deployment shape
+(Technical_Architecture_v2.md SS9: FastAPI backend behind a single managed
+platform's routing layer, e.g. Railway/Render) — not a chain of multiple
+trusted hops (a CDN in front of a load balancer, say), which this MVP does
+not target and does not implement. `trust_proxy_headers` defaults to
+`False`: an operator must explicitly opt in when they know their
+deployment actually places a trusted reverse proxy in front of the app,
+so a misconfigured or absent proxy can never accidentally let a client
+spoof its own rate-limit bucket. Tested (`tests/test_upload_rate_limit.py::TestProxyIpResolution`):
+the header is ignored entirely by default; a trusted header differentiates
+two distinct forwarded IPs into separate buckets; two requests sharing the
+same rightmost entry but different attacker-controlled leftmost entries
+still share one bucket; a trusted-but-missing header falls back to the
+direct peer address.
+
+## P11.6 Grounding Guard basis-sensitivity: a fifth, additive, proximity-windowed check
+
+**Location:** `backend/app/services/grounding_guard.py` (check 5,
+`_basis_substitution_detected`/`_basis_windows_by_token`)
+
+Phase 10 documented "basis substitution" as a known limitation: a claim
+could reuse a clause's own vocabulary and a correctly-cited number while
+reattaching it to a different, unsupported basis (the phase's worked
+example: "2% of the outstanding principal" reworded as "2% of the
+borrower's monthly loan payment"). It was deliberately left unfixed at
+the time given `grounding_guard.py`'s documented history of two prior
+regression-causing fix attempts in this exact file
+(`docs/EXPLANATION_GROUNDING_NOTES.md` §6.2/§6.3).
+
+Phase 11 attempted a genuine fix, with an architecture chosen specifically
+to avoid repeating §6.2's failure mode. §6.2's reverted check inspected
+*every* claim for a mismatched grammatical role (who the claim's subject
+is) — real semantic role identification, which is exactly why it broke an
+ordinary paraphrase that named the other legitimate party as its
+grammatical subject. This fix does not identify roles at all. Instead:
+
+1. `_basis_windows_by_token(text)` finds every numeric/date token in
+   `text`, and — only where that token is immediately followed by an
+   explicit "of" or "per" marker — captures the next up to 8 words as a
+   "basis phrase," reduced to its significant (non-stopword) words.
+2. For a claim, this is computed once for the claim text and once for the
+   `corpus` string check 4 already builds (raw_text + verified evidence
+   spans + entity text — the same grounding source every other check
+   uses).
+3. For every number in the claim that has a basis phrase, the claim's
+   basis words must overlap the corpus's basis words for that *same*
+   number at or above `_BASIS_OVERLAP_FLOOR` (0.34 — lower than check 4's
+   0.5 `_LEXICAL_OVERLAP_FLOOR`, because basis phrases are short and a
+   single-word difference swings the ratio much further than it would
+   over a full sentence). If the corpus never expresses *any* basis
+   phrase for that number, the claim fails closed — a claim asserting a
+   specific "X of Y" relationship the source never states in that form
+   for that number is treated as unsupported, not as "no evidence either
+   way so let it through."
+
+**Why this cannot repeat §6.2's regression:** it only ever activates for
+a claim that itself contains an explicit "of"/"per" construct attached to
+an already-check-1-verified number. A claim with no such construct (the
+overwhelming majority of claims, including every existing paraphrase
+regression case) is completely untouched by this check — there is no code
+path from "claim has no of/per" to a rejection. Verified empirically, not
+just argued: the full pre-existing 19-scenario adversarial suite
+(`test_explanation_fidelity.py`) passes unchanged except for `test_18`,
+which is exactly the case this fix targets and is now flipped from
+"documents the current (imperfect) behavior, asserts True" to "asserts
+False" (`test_18_semantically_similar_unsupported_claim_now_caught`). A
+new dedicated suite, `tests/services/test_grounding_guard_basis_sensitivity.py`
+(11 tests across 8 named categories: percentage-of-X, currency-per-X,
+time-period-of-X, interest-rate-per-annum, partial/multi-number
+substitution, legitimate synonym paraphrase, no-basis-construct
+non-regression, and invented-basis-for-a-bare-number fail-closed), each
+with the significant-word overlap arithmetic worked out by hand in a
+comment so a future floor/window-size change can be checked against a
+known-correct expectation. A full `corpus/eval/run_all.py` re-run
+confirms zero regression: DEV macro F1 unchanged at 1.00, TEST macro F1
+unchanged at 0.54, `unsupported_factual_claim_rate` unchanged at 0.00%,
+`unsupported_claim_leak_count` unchanged at 0, `fabrication_leak_count`
+unchanged at 0.
+
+**Honest residual limitation, not claimed fixed:** short/generic basis
+phrases can still slip past. If a number's real basis and an invented one
+both happen to end in the same generic word (e.g. both phrases end in
+"...date," sharing nothing else), the overlap ratio can still clear the
+floor. This is a narrowing of the original gap, not a mathematically
+complete closure of it — consistent with this module's explicit,
+repeatedly-stated scope: "a conservative, testable pattern match, not a
+semantic theorem prover." If a future case demonstrates this residual gap
+in practice, the correct response is a larger basis-window or a stricter
+per-word-specificity weighting, evaluated with the same
+regression-suite-first discipline used here — not a broader, less
+targeted rewrite of check 4 itself.
+
+## P11.7 Production configuration review: a real `CORS_ORIGINS` gap, found and closed
+
+**Location:** `backend/app/core/config.py` (`Settings.cors_origins_raw`),
+`backend/.env.example`, `backend/tests/test_config.py`
+
+The production-configuration review this phase asked for (task 100) found
+a genuine, previously-undetected bug rather than confirming there was
+nothing to fix: `backend/.env.example` (and, by extension, every real
+deployment's setup instructions) documented `CORS_ORIGINS` as the way to
+configure allowed frontend origins, but the underlying `Settings` field is
+named `cors_origins_raw` (the parsed `list[str]` property `cors_origins`
+is what callers actually use — `_raw` holds the unparsed comma-separated
+string) and had no `validation_alias`. Pydantic-settings therefore only
+ever recognized the env var `CORS_ORIGINS_RAW`, silently ignoring
+`CORS_ORIGINS` entirely and leaving CORS on the `http://localhost:3000`
+development default with no error, no warning, and no indication anything
+was wrong — an operator following the documented setup instructions for a
+real deployment would deploy with the wrong CORS origin and only discover
+it when the real frontend's requests started failing. Verified this was a
+real gap (not a hypothetical one) by constructing `Settings` with
+`CORS_ORIGINS` set in the environment before the fix and confirming
+`settings.cors_origins` silently stayed at the localhost default.
+
+**Fixed** by adding `validation_alias="CORS_ORIGINS"` to the field (plus
+`populate_by_name=True` on `model_config`, so the many existing direct
+`Settings(cors_origins_raw=...)` calls in tests keep working alongside the
+new alias — both the Python field name and the real env var name now
+construct the same setting). Verified the fix works via a new regression
+test, `test_cors_origins_env_var_is_the_documented_name`, which sets
+`CORS_ORIGINS` via `monkeypatch.setenv` (not a Python kwarg) and confirms
+it actually takes effect.
+
+**Structural guard against this recurring:** rather than trusting that
+`.env.example` and `Settings` will manually stay in sync going forward,
+added `test_env_example_stays_in_sync_with_every_settings_field`
+(`backend/tests/test_config.py`): it walks every field in
+`Settings.model_fields`, computes the real env var name each one is
+actually read from (respecting `validation_alias` where set), and asserts
+`.env.example` documents exactly that set of names — both directions
+(every real field is documented, and every documented line corresponds to
+a real field). A future renamed or added `Settings` field that isn't
+reflected in `.env.example` (or vice versa) now fails the test suite
+instead of silently drifting the way `CORS_ORIGINS` did.
+
+`.env.example` was also brought up to date with every setting added since
+it was last touched (Phase 4's retrieval/embedding/corpus-version
+settings, Phase 7's generation settings, Phase 10's rate-limit settings,
+Phase 11's `trust_proxy_headers`/`document_retention_days`) — all of
+these were functioning correctly already (no other field had this bug,
+confirmed by the same sync test passing once `.env.example` was
+completed), just previously undocumented for an operator setting up a
+real deployment.

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +34,13 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        # `cors_origins_raw` below sets a `validation_alias` -- without
+        # this, pydantic would only accept construction via that alias,
+        # breaking every existing direct `Settings(cors_origins_raw=...)`
+        # call (tests, mainly). With it, both the Python field name and
+        # the alias work for direct construction; env-var loading still
+        # uses the alias as the actual variable name either way.
+        populate_by_name=True,
     )
 
     environment: Environment = Environment.DEVELOPMENT
@@ -46,7 +53,15 @@ class Settings(BaseSettings):
     # tested without a real key.
     anthropic_api_key: SecretStr | None = None
 
-    cors_origins_raw: str = "http://localhost:3000"
+    # Phase 11 production-config review: the field is internally named
+    # `_raw` (unparsed) because `cors_origins` below is the parsed
+    # `list[str]` property callers actually use, but the natural env var
+    # name an operator would type is `CORS_ORIGINS`, not `CORS_ORIGINS_RAW`
+    # -- pydantic-settings would otherwise only recognize the latter,
+    # silently ignoring `CORS_ORIGINS` and leaving CORS on the
+    # localhost-only default with no error. `validation_alias` closes that
+    # gap: `CORS_ORIGINS` is the actual, documented, working env var name.
+    cors_origins_raw: str = Field(default="http://localhost:3000", validation_alias="CORS_ORIGINS")
 
     log_level: str = "INFO"
 
@@ -119,6 +134,22 @@ class Settings(BaseSettings):
     # MVP in-process precedent (Technical_Architecture_v2.md SS9).
     upload_rate_limit_max_requests: int = 20
     upload_rate_limit_window_seconds: float = 60.0
+
+    # Trusted-proxy IP resolution for the rate limiter (Phase 11 —
+    # docs/SECURITY_AUDIT.md SS5's documented limitation, closed here).
+    # `X-Forwarded-For` is attacker-controlled input and must never be
+    # honored unless a deployment explicitly configures a trusted proxy —
+    # see `app/core/rate_limit.py::resolve_client_ip`. Default `False`
+    # (direct-connection IP only) is the safe MVP default; a real
+    # deployment behind a reverse proxy sets this explicitly.
+    trust_proxy_headers: bool = False
+
+    # Automatic retention (Phase 11 — Security_and_Privacy_v2.md SS3:
+    # "Automatic retention window (e.g., 90 days)"). Applies to documents
+    # and everything that cascades from them; corpus/reference data is a
+    # separate, permanent asset never touched by this setting (see
+    # `app/services/retention_service.py`).
+    document_retention_days: int = 90
 
     @field_validator("log_level")
     @classmethod

@@ -22,7 +22,7 @@ nothing was offered for verification, so nothing can be trusted (fail
 closed, matching Product Principle 6's "never shown under any
 circumstance").
 
-**Four independent checks compose `supported_by_evidence`**, any one of
+**Five independent checks compose `supported_by_evidence`**, any one of
 which can fail a claim:
   1. Every number/date-like token in the claim (amounts, percentages,
      currency, time periods, dates) must **exactly match** a token
@@ -47,6 +47,20 @@ which can fail a claim:
      evidence text — permissive enough to pass a paraphrase (SS7
      "near-verbatim tolerance"), strict enough to fail a claim about
      something the clause never mentions at all.
+  5. **Basis sensitivity** (Phase 11, closing the gap documented as
+     test_18's "known limitation" in `tests/services/test_explanation_fidelity.py`
+     before this phase and in `docs/SECURITY_AUDIT.md` SS6): for a number
+     the claim explicitly attaches to a governing phrase via "of"/"per"
+     (e.g. "2% **of** the outstanding principal", "8.5% **per** annum"),
+     the words *immediately following that number in the claim* must
+     lexically overlap with the words following that *same* number
+     *wherever it appears with an "of"/"per" governing phrase in the
+     corpus* — see `_basis_windows_by_token` below for the full rationale.
+     This is a narrow, additive check: it only ever rejects a claim checks
+     1-4 would have accepted, never accepts one they would have rejected,
+     and only ever activates when the claim itself uses an explicit
+     "of"/"per" construct — a claim that states a number without one is
+     unaffected by this check, exactly as before.
 
 **Independent claim coverage** (Phase 7.5 SS2/SS3): trusting
 `generated.claims` alone leaves a gap -- nothing stops `explanation` prose
@@ -342,6 +356,104 @@ def _corpus_numeric_tokens(corpus: str, financial_entities: Sequence[FinancialEn
     return tokens
 
 
+# Phase 11 basis-sensitivity check (SS5 in the module docstring). A
+# governing phrase is only recognized when introduced by "of" or "per"
+# immediately after a number — the syntactic pattern the documented
+# vulnerability (and Security_and_Privacy_v2.md's worked example, "5% of
+# outstanding principal" vs. "5% of the original loan amount") both use.
+# Deliberately narrow: this is not an attempt to recognize every way
+# English can attach a number to what it measures (a number followed by a
+# bare noun phrase with no "of"/"per" marker at all is not covered, and is
+# not claimed to be) — a conservative, testable pattern match, not a
+# semantic parser (SS2/SS5's "do not build a broad semantic theorem
+# prover").
+_BASIS_MARKER_RE = re.compile(r"^\s*(?:of|per)\b", re.IGNORECASE)
+
+# How many words after the "of"/"per" marker form the governing phrase.
+# Short enough to capture a noun phrase ("the outstanding principal") and
+# not the rest of the sentence (which would dilute the comparison with
+# unrelated later clause content); long enough for realistic phrasing
+# ("the borrower's monthly loan payment" is 5 words including the marker's
+# own following word).
+_BASIS_WINDOW_WORDS = 8
+
+# Below this fraction of the claim's basis-phrase significant words
+# appearing in the corpus's basis phrase(s) for the same number, the claim
+# is treated as attaching that number to an unsupported basis. Lower than
+# `_LEXICAL_OVERLAP_FLOOR`: basis phrases are short (often 2-4 significant
+# words), so a single-word difference swings the ratio much further than
+# it would over a full sentence, and some tolerance for genuine synonym
+# paraphrase (e.g. "loan's outstanding balance" vs "outstanding principal"
+# both containing "outstanding") is still wanted. Tuned against
+# `tests/services/test_explanation_fidelity.py`'s existing scenarios (zero
+# regressions) and the adversarial basis-substitution cases in
+# `tests/services/test_grounding_guard_basis_sensitivity.py`.
+_BASIS_OVERLAP_FLOOR = 0.34
+
+
+def _basis_windows_by_token(text: str) -> dict[str, set[str]]:
+    """Maps each numeric/date token in `text` to the union of significant
+    words found in every "of X"/"per X" governing phrase that immediately
+    follows an occurrence of that token. A token with no such governing
+    phrase anywhere in `text` is simply absent from the returned dict —
+    callers must treat "absent" as "no basis phrase found here", not as
+    "basis confirmed empty."
+    """
+    windows: dict[str, set[str]] = {}
+    for match in _NUMBER_TOKEN_RE.finditer(text):
+        raw = match.group(0)
+        if not raw.strip():
+            continue
+        token = _normalize_numeric(raw)
+        remainder = text[match.end() :]
+        marker_match = _BASIS_MARKER_RE.match(remainder)
+        if marker_match is None:
+            continue
+        phrase = remainder[marker_match.end() :]
+        # Stop at the first sentence-ending punctuation so the window
+        # never bleeds into an unrelated later clause of the same sentence.
+        for stop_char in ".!?;":
+            cut = phrase.find(stop_char)
+            if cut != -1:
+                phrase = phrase[:cut]
+        words = phrase.split()[:_BASIS_WINDOW_WORDS]
+        significant = _significant_words(" ".join(words))
+        if significant:
+            windows.setdefault(token, set()).update(significant)
+    return windows
+
+
+def _basis_substitution_detected(
+    claim_text: str, corpus: str, corpus_numeric: set[str], corpus_dates: set[str]
+) -> bool:
+    """Returns `True` only when the claim explicitly attaches a real
+    (already-check-1-verified) number to an "of"/"per" governing phrase
+    whose words fail to sufficiently overlap with that same number's
+    governing phrase(s) in the corpus — including the case where the
+    corpus never expresses a governing phrase for that number at all,
+    which is exactly the "invented basis for a bare number" pattern this
+    check exists to catch (fail closed: a specific "X% of Y" relationship
+    the source never states for that X is not something a lexical-overlap
+    check anywhere else in this module verifies).
+    """
+    claim_windows = _basis_windows_by_token(claim_text)
+    if not claim_windows:
+        return False
+    corpus_windows = _basis_windows_by_token(corpus)
+    for token, claim_words in claim_windows.items():
+        if token not in corpus_numeric and token not in corpus_dates:
+            # Check 1 already rejects this claim for an unrecognized
+            # number/date token -- not this check's concern.
+            continue
+        corpus_words = corpus_windows.get(token, set())
+        if not corpus_words:
+            return True
+        overlap = len(claim_words & corpus_words) / len(claim_words)
+        if overlap < _BASIS_OVERLAP_FLOOR:
+            return True
+    return False
+
+
 def _has_forbidden_language(claim_text: str, forbidden: Sequence[str]) -> bool:
     lowered = claim_text.lower()
     return any(phrase in lowered for phrase in forbidden)
@@ -386,6 +498,12 @@ def supported_by_evidence(
     for token in _date_tokens(claim.text):
         if token not in corpus_dates:
             return False
+
+    # Check 5: basis sensitivity -- a number that passed check 1 can still
+    # be attached to a governing phrase ("X% of Y") the corpus never
+    # supports for that number (Phase 11 -- see module docstring point 5).
+    if _basis_substitution_detected(claim.text, corpus, corpus_numeric, corpus_dates):
+        return False
 
     # Check 4: lexical overlap for the remaining descriptive content.
     significant = _significant_words(claim.text)

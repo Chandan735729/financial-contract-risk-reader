@@ -26,6 +26,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.logging import get_logger, log_event
+from app.core.metrics import (
+    EXPLANATIONS_FALLBACK_USED,
+    EXPLANATIONS_GENERATED,
+    EXPLANATIONS_GENERATION_FAILED,
+    metrics,
+)
 from app.models import db_models
 from app.models.enums import DocumentType
 from app.models.schemas import ClauseAnalysis
@@ -221,6 +227,7 @@ def generate_pending_explanations(
                 stage="generating",
                 error_category=f"generation_failed:{category}",
             )
+            metrics.increment(EXPLANATIONS_GENERATION_FAILED)
             continue
 
         calls_made += 1
@@ -238,6 +245,8 @@ def generate_pending_explanations(
                 grounded += 1
             else:
                 fallback += 1
+                metrics.increment(EXPLANATIONS_FALLBACK_USED)
+            metrics.increment(EXPLANATIONS_GENERATED)
             log_event(
                 logger,
                 "clause_explanation_generated",
@@ -258,6 +267,7 @@ def generate_pending_explanations(
                 stage="generating",
                 error_category="generation_pipeline_failure",
             )
+            metrics.increment(EXPLANATIONS_GENERATION_FAILED)
 
     db.flush()
     return DocumentGenerationSummary(

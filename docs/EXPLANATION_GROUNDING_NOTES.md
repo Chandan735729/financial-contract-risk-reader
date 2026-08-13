@@ -190,6 +190,45 @@ carefully-scoped conditional-language marker table (checking for
 unconditional-assertion phrases like "regardless of"/"always applies" when
 `clause.condition` is non-null) or a step change in verification approach.
 
+### 6.4 Basis substitution: found in Phase 10, closed in Phase 11
+
+A claim could reuse a clause's own vocabulary and a correctly-cited number
+while reattaching it to a different, unsupported basis — e.g. this
+document's own running example's "2% of the outstanding principal" reworded
+as "2% of the borrower's monthly loan payment". Check 1 passed trivially
+(the number is real); check 4 also passed, because enough *other*
+incidental words overlapped across the *whole* claim that the swapped
+basis noun phrase alone didn't pull the ratio below the floor. Found by
+the Phase 10 security audit's adversarial testing and initially documented
+as a known limitation rather than risked as a same-phase fix, given §6.2's
+demonstrated regression history in this exact file.
+
+Phase 11 attempted a genuine fix rather than leaving it deferred
+indefinitely, with an architecture deliberately narrower than §6.2's
+reverted attempt: instead of trying to identify grammatical roles (which
+is what caused §6.2's false positive), it compares only the words
+immediately following a number's explicit "of"/"per" governing phrase in
+the claim against the words following that *same number's* governing
+phrase(s) in the source — a proximity-windowed comparison, not a
+whole-sentence or role-identification one. This is check 5,
+`_basis_substitution_detected` in `grounding_guard.py`
+(docs/PROVISIONAL_DECISIONS.md P11.6). It is purely additive: it only ever
+activates when the claim itself contains an explicit "of"/"per"
+construct, so it cannot introduce a false positive on any claim that
+doesn't make a basis assertion in the first place — structurally
+different from §6.2's check, which inspected every claim regardless.
+Verified against the full existing 19-scenario suite (zero regressions),
+11 new dedicated adversarial/regression cases across 8 categories
+(`tests/services/test_grounding_guard_basis_sensitivity.py`), and a full
+`corpus/eval/run_all.py` re-run (DEV/TEST macro F1 and all grounding-safety
+metrics unchanged). A residual limitation is documented in P11.6: very
+short/generic basis phrases (e.g. a bare "date" with no other descriptive
+words around it) can still share just enough vocabulary between an
+invented and a real basis to slip past the overlap floor — this narrows
+the original gap considerably rather than closing it with mathematical
+certainty, consistent with this module's "conservative, testable,
+deterministic — not a semantic theorem prover" scope throughout.
+
 ## 7. Before / after
 
 | Metric | Phase 7 (before) | Phase 7.5 (after) | Note |
@@ -218,3 +257,41 @@ directly answers "is a shown explanation ever unsupported"), and two
 honestly-documented residual gaps (§6.2, §6.3) that a token-based verifier
 cannot close without becoming the semantic NLP system this phase was
 explicitly told not to build.
+
+## 8. Phase 11 re-run: basis-substitution fix, metrics unchanged
+
+Full metrics re-run (`corpus/eval/run_all.py`) after §6.4's basis-
+sensitivity check landed, on the same synthetic benchmark:
+
+| Metric | Before (Phase 10) | After (Phase 11) | Note |
+|---|---|---|---|
+| `grounded_explanation_rate` | 87.50% | 87.50% | Unchanged — this dataset's cases were never affected by the basis-substitution gap in the first place |
+| `unsupported_factual_claim_rate` (the safety metric) | 0.00% | 0.00% | Unchanged — was already 0 before this fix; the fix closes an *adversarial* gap the benchmark's own cases didn't happen to exercise, not a live leak on this dataset |
+| `claim_coverage_rate` | 75.00% | 75.00% | Unchanged |
+| `unsupported_claim_leak_count` (hard gate) | 0 | 0 | Unchanged |
+| `fabrication_leak_count` (evidence eval) | 0 | 0 | Unchanged |
+| DEV macro F1 (risk classification) | 1.00 | 1.00 | Unchanged — Risk Engine untouched by this phase |
+| TEST macro F1 (risk classification) | 0.54 | 0.54 | Unchanged — Risk Engine untouched by this phase |
+| Adversarial cases (`corpus/eval/run_all.py`) | 9 pass / 0 fail / 0 known_gap / 1 observe | 9 pass / 0 fail / 0 known_gap / 1 observe | Unchanged |
+| `test_explanation_fidelity.py` known-limitation count | 3 (`test_07`, `test_12`, `test_18`) | 2 (`test_07`, `test_12`) | `test_18` flipped from documenting the gap to confirming the fix |
+
+**Honest reading:** none of the synthetic benchmark's own numbers moved,
+because the benchmark's cases were never constructed to exercise the
+basis-substitution pattern in the first place — the gap was found by
+adversarial testing specifically targeting it (Phase 10), not by this
+benchmark. The fix is validated by the 11 new dedicated adversarial cases
+in `tests/services/test_grounding_guard_basis_sensitivity.py` and by
+`test_18` flipping from a documented-gap assertion to a fixed-behavior
+assertion, not by a benchmark-metric delta — this is expected and does not
+mean the fix is unverified, it means the benchmark and the adversarial
+suite are testing different things (typical-case coverage vs. a specific
+known attack pattern), same as every prior grounding-guard change in this
+document.
+
+**Not claimed: 100% grounding safety.** Two residual limitations remain,
+unchanged from Phase 10 (§6.2 affected-party changes, §6.3 conditionality
+changes), plus the narrower residual gap in the basis-sensitivity fix
+itself documented in §6.4 and `docs/PROVISIONAL_DECISIONS.md` P11.6 (very
+short/generic basis phrases can still slip past). All three affect
+explanation prose only — never the risk verdict, confidence, category, or
+evidence shown to a user (SS1 of `docs/SECURITY_AUDIT.md`).

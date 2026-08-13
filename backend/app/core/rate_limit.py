@@ -7,14 +7,36 @@ into every error-mapping table, but nothing ever raised it).
 Deliberately a simple in-memory fixed-window counter keyed by client IP —
 no Redis/external dependency, matching this project's established
 "MVP in-process, single worker" precedent (Technical_Architecture_v2.md
-SS9, reused for Phase 8's background pipeline). Documented limitation
-(docs/SECURITY_AUDIT.md): state is per-worker-process, so a multi-worker
-or multi-instance deployment needs a shared store (e.g. Redis) for a true
-global limit — explicitly out of scope per Security_and_Privacy_v2.md SS9
-"Do-Not-Over-Engineer Notes". Also does not resolve `X-Forwarded-For`:
-behind a reverse proxy without that configured, every request appears to
-come from the proxy's IP, degrading the limit to a single shared bucket —
-acceptable for MVP, documented rather than silently assumed away.
+SS9, reused for Phase 8's background pipeline).
+
+**Documented, unresolved-by-design limitation (docs/SECURITY_AUDIT.md
+SS5):** state is per-worker-process. A multi-worker or multi-instance
+deployment needs a shared store (e.g. Redis) for a true global limit —
+explicitly out of scope per Security_and_Privacy_v2.md SS9 "Do-Not-Over-
+Engineer Notes" for this MVP phase. Single-instance, single-worker
+deployment (the only configuration this repository's operational docs
+recommend — see docs/DEPLOYMENT_CHECKLIST.md) does not hit this limitation
+at all: there is exactly one process, so "per-process" and "global" are
+the same thing.
+
+**Proxy IP resolution (`resolve_client_ip`, Phase 11):** `X-Forwarded-For`
+is attacker-controlled input — a client can set it to anything before the
+request ever reaches a reverse proxy — so it is never honored unless
+`Settings.trust_proxy_headers` is explicitly set `True` for a deployment
+that actually sits behind exactly one trusted reverse proxy. When trusted,
+only the *rightmost* entry in the header is used: that is the address the
+trusted proxy itself observed as its direct peer (each hop a request
+passes through appends its observed peer address to the end of the list,
+so everything left of the last entry — including a value an attacker
+supplied directly — is unverified). This models exactly one trusted proxy
+hop; a deployment with more than one hop of trusted proxying (e.g. a CDN
+in front of a load balancer) would need to trust more than one entry from
+the right, which is not implemented here and not needed by the documented
+Vercel/Railway-or-Render deployment shape (Technical_Architecture_v2.md
+SS9's "Unchanged from v1" architecture) this MVP targets. With
+`trust_proxy_headers=False` (the default), the header is ignored entirely
+and `request.client.host` (the direct TCP peer) is used — correct, and
+the only safe choice, when there is no trusted proxy in front of the app.
 """
 
 from __future__ import annotations
@@ -26,6 +48,7 @@ from fastapi import Depends, Request, status
 
 from app.core.config import Settings, get_settings
 from app.core.errors import ApiError
+from app.core.metrics import UPLOAD_RATE_LIMIT_REJECTIONS, metrics
 from app.models.enums import ErrorCode
 
 
@@ -63,12 +86,20 @@ class InMemoryRateLimiter:
 _upload_limiter = InMemoryRateLimiter()
 
 
-def _client_key(request: Request) -> str:
-    # No X-Forwarded-For trust boundary is configured for this MVP (see
-    # module docstring) — request.client.host is the direct peer address,
-    # which is the correct source of truth when there is no trusted proxy
-    # in front of the app, and a documented, non-silent degradation when
-    # there is one.
+def resolve_client_ip(request: Request, settings: Settings) -> str:
+    """The address to rate-limit by. See the module docstring for the full
+    trust-boundary rationale — summary: `X-Forwarded-For` is only ever
+    consulted when `settings.trust_proxy_headers` is `True`, and even then
+    only its rightmost entry (the one hop of trusted proxying this MVP
+    models) is used. Otherwise, and whenever the header is absent, falls
+    back to the direct TCP peer address.
+    """
+    if settings.trust_proxy_headers:
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            candidates = [part.strip() for part in forwarded_for.split(",") if part.strip()]
+            if candidates:
+                return candidates[-1]
     return request.client.host if request.client else "unknown"
 
 
@@ -78,11 +109,12 @@ def enforce_upload_rate_limit(request: Request, settings: Settings = Depends(get
     `settings.upload_rate_limit_window_seconds`.
     """
     allowed = _upload_limiter.allow(
-        _client_key(request),
+        resolve_client_ip(request, settings),
         max_requests=settings.upload_rate_limit_max_requests,
         window_seconds=settings.upload_rate_limit_window_seconds,
     )
     if not allowed:
+        metrics.increment(UPLOAD_RATE_LIMIT_REJECTIONS)
         raise ApiError(ErrorCode.RATE_LIMITED, status.HTTP_429_TOO_MANY_REQUESTS)
 
 

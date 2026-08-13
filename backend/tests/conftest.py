@@ -163,13 +163,20 @@ def make_client(
     ("testclient") for every request — without this reset, upload counts
     would silently accumulate *across unrelated tests* in the same pytest
     process and eventually trip false-positive 429s.
+
+    Also resets the module-level operational metrics registry (Phase 11)
+    for the same reason: it's a process-global singleton, so without a
+    reset here a metrics assertion in one test would see counts left over
+    from unrelated tests run earlier in the same pytest process.
     """
     from app.api.deps import get_embedding_service as real_get_embedding_service
     from app.api.deps import get_vector_store as real_get_vector_store
+    from app.core.metrics import reset_metrics
     from app.core.rate_limit import reset_upload_rate_limiter
 
     def make(**settings_overrides: Any) -> TestClient:
         reset_upload_rate_limiter()
+        reset_metrics()
         settings = Settings(
             environment="test",
             database_url="sqlite:///:memory:",

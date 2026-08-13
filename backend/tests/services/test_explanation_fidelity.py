@@ -230,32 +230,26 @@ class TestSeventeenScenarios:
         assert outcome.attempts == 2
         assert outcome.failure_category == "grounding_failed_after_retry"
 
-    def test_18_semantically_similar_unsupported_claim_known_limitation(self):
-        # KNOWN LIMITATION, found by this Phase 10 security audit (not
-        # previously documented) and recorded here rather than silently
-        # left undiscovered: reuses the clause's own vocabulary
-        # ("prepayment", "penalty", "borrower", and — coincidentally, via
-        # the clause's own "the loan is repaid" phrase — "loan") but
-        # reattaches the correctly-cited "2%" to a different, unsupported
-        # basis (the borrower's *monthly payment*, not the *outstanding
-        # principal*). Check 1 passes trivially (the number is real);
-        # check 4 (aggregate bag-of-words overlap, `_LEXICAL_OVERLAP_FLOOR`)
-        # also passes, because enough *other* incidental words overlap that
-        # the swapped basis noun phrase doesn't pull the ratio below the
-        # floor. This is architecturally the same class of gap as
-        # test_12's conditionality limitation: whole-sentence lexical
-        # overlap cannot detect that a number's *basis/object* was swapped
-        # when unrelated vocabulary otherwise overlaps enough. A real fix
-        # needs proximity-windowed (number-to-basis) comparison, not
-        # whole-sentence bag-of-words — a materially larger, riskier change
-        # to a verifier that has already needed two reverts in this exact
-        # area (docs/EXPLANATION_GROUNDING_NOTES.md SS6.2/SS6.3), so it is
-        # documented here, in docs/SECURITY_AUDIT.md, and in
-        # docs/PROVISIONAL_DECISIONS.md rather than attempted under this
-        # phase's time constraints against this file's demonstrated
-        # regression history.
+    def test_18_semantically_similar_unsupported_claim_now_caught(self):
+        # Found by the Phase 10 security audit, FIXED in Phase 11
+        # (grounding_guard.py check 5, "basis sensitivity" —
+        # docs/PROVISIONAL_DECISIONS.md P11.6): reuses the clause's own
+        # vocabulary ("prepayment", "penalty", "borrower", and —
+        # coincidentally, via the clause's own "the loan is repaid" phrase
+        # — "loan") but reattaches the correctly-cited "2%" to a different,
+        # unsupported basis (the borrower's *monthly payment*, not the
+        # *outstanding principal*). Check 1 still passes trivially (the
+        # number is real); check 4's aggregate bag-of-words overlap still
+        # passes too, for the same reason as before. What's new is check 5:
+        # it compares only the words immediately following "2%" in the
+        # claim ("of the borrower's monthly loan payment") against the
+        # words immediately following "2%" in the source ("of the
+        # outstanding principal if the loan is repaid") — a
+        # proximity-windowed, basis-specific comparison, not a
+        # whole-sentence one — and that narrow comparison correctly finds
+        # too little overlap ({"loan"} out of 4 significant claim words).
         result = _supported("The prepayment penalty is 2% of the borrower's monthly loan payment")
-        assert result is True  # documents the current (imperfect) behavior
+        assert result is False
 
     def test_19_contradicts_risk_engine_verdict_without_safe_language(self):
         # Phase 10 security audit: contradicts the HIGH verdict by

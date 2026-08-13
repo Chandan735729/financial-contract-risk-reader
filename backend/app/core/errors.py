@@ -129,7 +129,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             status_code=422,
         )
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content=_error_body(
                 ErrorCode.INTERNAL_ERROR,
                 "The request could not be processed.",

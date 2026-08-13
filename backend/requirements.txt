@@ -1,4 +1,13 @@
-fastapi==0.115.6
+fastapi==0.133.0
+# Explicit pin, not left to fastapi's own unbounded `starlette>=0.40.0`
+# requirement — Phase 11 dependency upgrade, closing the reachable
+# starlette form-parsing DoS finding from Phase 10 (PYSEC-2026-249) at
+# the root. fastapi==0.133.0 is the minimal fastapi version that supports
+# starlette 1.x at all (it previously capped `starlette<1.0.0`); pinning
+# starlette itself to the latest 1.x release picks up every fix in that
+# family, not just the one advisory. See docs/PROVISIONAL_DECISIONS.md
+# "Phase 11: FastAPI/Starlette upgrade".
+starlette==1.6.0
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 pydantic-settings==2.7.1

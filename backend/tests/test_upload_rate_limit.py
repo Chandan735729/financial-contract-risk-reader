@@ -71,3 +71,101 @@ class TestUploadRateLimit:
             f"/v1/documents/{doc.id}/report", headers={"Authorization": f"Bearer {doc.access_token}"}
         )
         assert report.status_code == 200
+
+
+class TestProxyIpResolution:
+    """Phase 11 — `resolve_client_ip` (docs/PROVISIONAL_DECISIONS.md P11.5).
+    `X-Forwarded-For` is attacker-controlled input and must never be
+    honored unless a deployment explicitly configures `trust_proxy_headers`.
+    Starlette's `TestClient` always reports the same fixed direct-peer IP
+    ("testclient") for every request, so these tests distinguish "trusted"
+    vs "ignored" `X-Forwarded-For` handling by whether *that* header value
+    is allowed to split requests into separate rate-limit buckets.
+    """
+
+    def test_x_forwarded_for_is_ignored_by_default(self, make_client):
+        client = make_client(upload_rate_limit_max_requests=1, upload_rate_limit_window_seconds=60.0)
+        pdf_bytes = build_pdf()
+
+        first = _upload(client, pdf_bytes)
+        assert first.status_code == 201
+
+        # A different claimed X-Forwarded-For does not open a new bucket:
+        # trust_proxy_headers defaults to False, so the header is never
+        # even read, and both requests are keyed by the same direct peer
+        # address.
+        second = client.post(
+            "/v1/documents",
+            files={"file": ("contract.pdf", pdf_bytes, "application/pdf")},
+            headers={"X-Forwarded-For": "203.0.113.5"},
+        )
+        assert second.status_code == 429
+
+    def test_trusted_proxy_header_differentiates_clients(self, make_client):
+        client = make_client(
+            upload_rate_limit_max_requests=1, upload_rate_limit_window_seconds=60.0, trust_proxy_headers=True
+        )
+        pdf_bytes = build_pdf()
+
+        first = client.post(
+            "/v1/documents",
+            files={"file": ("contract.pdf", pdf_bytes, "application/pdf")},
+            headers={"X-Forwarded-For": "203.0.113.5"},
+        )
+        assert first.status_code == 201
+
+        # A genuinely different (trusted, since trust_proxy_headers=True)
+        # forwarded IP gets its own bucket -- not blocked by client A's
+        # exhausted limit.
+        second = client.post(
+            "/v1/documents",
+            files={"file": ("contract.pdf", pdf_bytes, "application/pdf")},
+            headers={"X-Forwarded-For": "203.0.113.9"},
+        )
+        assert second.status_code == 201
+
+        # Same forwarded IP as the first request -- shares its bucket, now
+        # exhausted.
+        third = client.post(
+            "/v1/documents",
+            files={"file": ("contract.pdf", pdf_bytes, "application/pdf")},
+            headers={"X-Forwarded-For": "203.0.113.5"},
+        )
+        assert third.status_code == 429
+
+    def test_only_the_rightmost_forwarded_entry_is_trusted(self, make_client):
+        # Simulates exactly one trusted proxy hop: the proxy appends the
+        # peer address *it* observed to the end of the list. Everything to
+        # the left (including a value an attacker set directly) must be
+        # ignored -- two requests with different attacker-supplied leftmost
+        # values but the same proxy-appended rightmost value must share one
+        # bucket.
+        client = make_client(
+            upload_rate_limit_max_requests=1, upload_rate_limit_window_seconds=60.0, trust_proxy_headers=True
+        )
+        pdf_bytes = build_pdf()
+
+        first = client.post(
+            "/v1/documents",
+            files={"file": ("contract.pdf", pdf_bytes, "application/pdf")},
+            headers={"X-Forwarded-For": "1.2.3.4, 203.0.113.5"},
+        )
+        assert first.status_code == 201
+
+        second = client.post(
+            "/v1/documents",
+            files={"file": ("contract.pdf", pdf_bytes, "application/pdf")},
+            headers={"X-Forwarded-For": "9.9.9.9, 203.0.113.5"},
+        )
+        assert second.status_code == 429
+
+    def test_missing_header_falls_back_to_direct_peer_even_when_trusted(self, make_client):
+        client = make_client(
+            upload_rate_limit_max_requests=1, upload_rate_limit_window_seconds=60.0, trust_proxy_headers=True
+        )
+        pdf_bytes = build_pdf()
+
+        first = _upload(client, pdf_bytes)
+        assert first.status_code == 201
+        second = _upload(client, pdf_bytes)
+        assert second.status_code == 429

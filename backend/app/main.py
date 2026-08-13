@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.documents import router as documents_router
 from app.api.health import router as health_router
+from app.api.metrics import router as metrics_router
 from app.api.reports import router as reports_router
 from app.core.config import get_settings
 from app.core.errors import install_exception_handlers
@@ -80,20 +81,21 @@ async def security_headers(request: Request, call_next):
 
 # Reject a non-multipart body on the upload route before FastAPI/Starlette
 # ever attempts to parse it as a form (Phase 10 security audit,
-# pip-audit finding PYSEC-2026-249): the installed starlette version
-# (pinned indirectly via fastapi==0.115.6's `starlette<0.42.0` requirement)
-# has a known resource-exhaustion issue where `max_fields`/`max_part_size`
-# limits are enforced for `multipart/form-data` bodies but silently
+# pip-audit finding PYSEC-2026-249): the starlette version pinned at the
+# time (indirectly, via fastapi==0.115.6's `starlette<0.42.0` requirement)
+# had a known resource-exhaustion issue where `max_fields`/`max_part_size`
+# limits were enforced for `multipart/form-data` bodies but silently
 # ignored for `application/x-www-form-urlencoded` ones. The upload
 # endpoint only ever expects multipart (`UploadFile = File(...)`), so a
 # `application/x-www-form-urlencoded` (or any other) content type on that
 # path is never legitimate traffic — rejecting it here, in middleware,
 # means the request body is never handed to the vulnerable parsing path
-# at all. Upgrading starlette itself is out of scope for this phase
-# (requires a coordinated fastapi major-version bump — see
-# docs/SECURITY_AUDIT.md's accepted-risk entry for the remaining,
-# lower-impact advisories in this same family that this narrow fix does
-# not address).
+# at all. Phase 11 subsequently upgraded to fastapi==0.133.0/starlette==1.6.0,
+# which closes PYSEC-2026-249 upstream (confirmed via `pip-audit` — see
+# docs/PROVISIONAL_DECISIONS.md P11.1) — this middleware is kept anyway as
+# harmless, zero-cost defense-in-depth rather than removed, since the
+# upload route genuinely never expects a non-multipart body regardless of
+# the underlying framework's own protections.
 _UPLOAD_PATH = "/v1/documents"
 
 
@@ -117,5 +119,6 @@ async def reject_non_multipart_upload_body(request: Request, call_next):
 
 
 app.include_router(health_router)
+app.include_router(metrics_router)
 app.include_router(documents_router)
 app.include_router(reports_router)

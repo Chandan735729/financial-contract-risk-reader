@@ -22,6 +22,7 @@ from app.api.deps import get_embedding_service, get_llm_client, get_vector_store
 from app.core.config import Settings, get_settings
 from app.core.errors import ApiError
 from app.core.logging import get_logger, log_event
+from app.core.metrics import DOCUMENTS_UPLOADED, metrics
 from app.core.rate_limit import enforce_upload_rate_limit
 from app.db.session import get_db, get_session_factory
 from app.models import db_models
@@ -29,6 +30,7 @@ from app.models.enums import DocumentType, ErrorCode, ProcessingStage
 from app.models.schemas import DocumentUploadResponse
 from app.pipeline.analysis_pipeline import run_analysis_pipeline_in_background
 from app.services import storage
+from app.services.document_deletion_service import delete_document as delete_document_data
 from app.services.embedding_service import EmbeddingService
 from app.services.llm_client import GenerationLLMClient
 from app.services.parsing.detection import detect_file_kind
@@ -46,16 +48,16 @@ logger = get_logger(__name__)
 _UPLOAD_READ_CHUNK_SIZE = 1024 * 1024  # 1 MB
 
 _STATUS_CODE_BY_ERROR_CODE: dict[ErrorCode, int] = {
-    ErrorCode.FILE_TOO_LARGE: status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+    ErrorCode.FILE_TOO_LARGE: status.HTTP_413_CONTENT_TOO_LARGE,
     ErrorCode.UNSUPPORTED_FILE_TYPE: status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-    ErrorCode.CORRUPTED_FILE: status.HTTP_422_UNPROCESSABLE_ENTITY,
-    ErrorCode.PASSWORD_PROTECTED: status.HTTP_422_UNPROCESSABLE_ENTITY,
-    ErrorCode.LOW_TEXT_CONTENT: status.HTTP_422_UNPROCESSABLE_ENTITY,
+    ErrorCode.CORRUPTED_FILE: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    ErrorCode.PASSWORD_PROTECTED: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    ErrorCode.LOW_TEXT_CONTENT: status.HTTP_422_UNPROCESSABLE_CONTENT,
 }
 
 
 def _status_code_for(code: ErrorCode) -> int:
-    return _STATUS_CODE_BY_ERROR_CODE.get(code, status.HTTP_422_UNPROCESSABLE_ENTITY)
+    return _STATUS_CODE_BY_ERROR_CODE.get(code, status.HTTP_422_UNPROCESSABLE_CONTENT)
 
 
 async def _read_upload_within_limit(file: UploadFile, max_bytes: int) -> bytes:
@@ -67,7 +69,7 @@ async def _read_upload_within_limit(file: UploadFile, max_bytes: int) -> bytes:
             break
         total += len(chunk)
         if total > max_bytes:
-            raise ApiError(ErrorCode.FILE_TOO_LARGE, status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+            raise ApiError(ErrorCode.FILE_TOO_LARGE, status.HTTP_413_CONTENT_TOO_LARGE)
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -102,7 +104,7 @@ async def upload_document(
     data = await _read_upload_within_limit(file, settings.max_upload_size_bytes)
 
     if not data:
-        raise ApiError(ErrorCode.CORRUPTED_FILE, status.HTTP_422_UNPROCESSABLE_ENTITY)
+        raise ApiError(ErrorCode.CORRUPTED_FILE, status.HTTP_422_UNPROCESSABLE_CONTENT)
 
     # Real content sniffed from bytes — filename/extension/Content-Type are
     # never trusted (Phase 2 spec SS2; Security_and_Privacy_v2.md SS2).
@@ -169,6 +171,7 @@ async def upload_document(
         stage="parsing",
         document_type=DocumentType.UNKNOWN.value,
     )
+    metrics.increment(DOCUMENTS_UPLOADED)
 
     # Segmentation-onward runs as a background task, single-document-at-a-
     # time per worker (Technical_Architecture_v2.md SS9 "MVP in-process"; no
@@ -214,12 +217,11 @@ def delete_document(
     Ordered this way (DB row first, file cleanup second) so an
     access-token holder's request to remove their data is honored even if
     the best-effort file cleanup that follows encounters an unexpected
-    filesystem error.
+    filesystem error. Delegates to `document_deletion_service.delete_document`
+    (Phase 11), the same function the automatic retention cleanup job uses,
+    so user-initiated and automatic deletion can never drift apart.
     """
-    storage_path = document.storage_path
-    db.delete(document)
-    db.flush()
-    if storage_path:
-        storage.delete_document_file(settings.upload_dir, storage_path)
+    document_id = document.id
+    delete_document_data(db, document, settings.upload_dir)
 
-    log_event(logger, "document_deleted", document_id=str(document.id))
+    log_event(logger, "document_deleted", document_id=str(document_id))

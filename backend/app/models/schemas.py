@@ -134,6 +134,21 @@ class HealthResponse(BaseModel):
     environment: str
 
 
+class ReadinessCheckResult(BaseModel):
+    """One dependency's pass/fail — deliberately no error message/exception
+    text/stack trace field: a readiness probe is often reachable without
+    authentication (orchestrators poll it unauthenticated), so it must never
+    become a channel for internal diagnostic detail (Security_and_Privacy_v2.md
+    SS1/SS9)."""
+
+    ok: bool
+
+
+class ReadinessResponse(BaseModel):
+    ready: bool
+    checks: dict[str, ReadinessCheckResult]
+
+
 class DocumentUploadResponse(BaseModel):
     """`POST /documents` response (API_and_Data_Models.md SS3) — deliberately
     just these two fields. No filesystem path, storage key, or parsed

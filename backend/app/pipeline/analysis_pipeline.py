@@ -60,6 +60,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings
 from app.core.logging import get_logger, log_event
+from app.core.metrics import (
+    PIPELINE_JOB_DURATION_SECONDS,
+    PIPELINE_JOBS_COMPLETED,
+    PIPELINE_JOBS_FAILED,
+    metrics,
+)
 from app.models import db_models
 from app.models.enums import ErrorCode, ProcessingStage
 from app.services import segmentation_service, storage
@@ -126,6 +132,7 @@ def _mark_failed(db: Session, job: db_models.ProcessingJob, error_code: ErrorCod
     job.error_code = error_code.value
     job.completed_at = datetime.now(UTC)
     db.flush()
+    metrics.increment(PIPELINE_JOBS_FAILED)
 
 
 def run_analysis_pipeline(
@@ -235,6 +242,7 @@ def run_analysis_pipeline(
             # for a zero-clause result — nothing further to isolate around.
             job.completed_at = datetime.now(UTC)
             db.flush()
+            metrics.increment(PIPELINE_JOBS_FAILED)
             return PipelineOutcome(document_id, ProcessingStage.FAILED, job.error_code, 0, 0, None, None)
         current_rank = _rank(job.stage)
 
@@ -326,14 +334,17 @@ def run_analysis_pipeline(
     job.completed_at = datetime.now(UTC)
     db.flush()
 
+    pipeline_duration_seconds = time.monotonic() - pipeline_start
     log_event(
         logger,
         "pipeline_completed",
         document_id=str(document_id),
         stage=job.stage.value,
-        duration_ms=int((time.monotonic() - pipeline_start) * 1000),
+        duration_ms=int(pipeline_duration_seconds * 1000),
         count=len(clauses),
     )
+    metrics.increment(PIPELINE_JOBS_COMPLETED)
+    metrics.observe_duration_seconds(PIPELINE_JOB_DURATION_SECONDS, pipeline_duration_seconds)
 
     return PipelineOutcome(
         document_id=document_id,
@@ -405,6 +416,7 @@ def run_analysis_pipeline_in_background(
                 job.error_code = ErrorCode.INTERNAL_ERROR.value
                 job.completed_at = datetime.now(UTC)
                 session.commit()
+                metrics.increment(PIPELINE_JOBS_FAILED)
         except Exception:
             session.rollback()
     finally:

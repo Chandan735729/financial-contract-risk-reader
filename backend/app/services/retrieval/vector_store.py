@@ -39,6 +39,15 @@ class ChromaVectorStore:
     def __init__(self, client: ClientAPI) -> None:
         self._client = client
 
+    def ping(self) -> None:
+        """Lightweight connectivity check for the readiness probe
+        (`GET /health/ready`) — independent of any specific taxonomy/corpus
+        collection, so it works even against a brand-new persistence
+        directory with no corpus indexed yet. Raises if the underlying
+        Chroma client can't respond at all; callers translate that into a
+        503, never into leaked exception detail."""
+        self._client.heartbeat()
+
     def _collection(self, taxonomy_version: str, corpus_version: str):
         return self._client.get_or_create_collection(
             _collection_name(taxonomy_version, corpus_version),
