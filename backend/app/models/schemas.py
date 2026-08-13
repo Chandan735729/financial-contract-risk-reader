@@ -141,3 +141,129 @@ class DocumentUploadResponse(BaseModel):
 
     document_id: uuid.UUID
     access_token: str
+
+
+class ApiErrorDetail(BaseModel):
+    """Mirrors `frontend/src/types/api.ts`'s `ApiErrorDetail` exactly — the
+    same shape `core/errors.py` already uses for the top-level `{"error":
+    {...}}` envelope, reused here as the `status`/`report` endpoints'
+    embedded `error` field (API_and_Data_Models.md SS3)."""
+
+    code: str
+    user_message: str
+    request_id: uuid.UUID
+
+
+class DocumentStatusResponse(BaseModel):
+    """`GET /documents/{id}/status` response (API_and_Data_Models.md SS3;
+    `frontend/src/types/api.ts`'s `ProcessingStatus`). Stage/error only — no
+    internal error category, exception type, or implementation detail ever
+    appears here (Security_and_Privacy_v2.md SS6)."""
+
+    document_id: uuid.UUID
+    document_type: DocumentType
+    document_type_confidence: float | None = None
+    stage: Literal[
+        "queued",
+        "parsing",
+        "segmenting",
+        "understanding",
+        "scoring",
+        "generating",
+        "verifying",
+        "completed",
+        "failed",
+    ]
+    error: ApiErrorDetail | None = None
+
+
+class ReportClauseAnalysis(BaseModel):
+    """The `analysis` object inside each `/report` clause
+    (API_and_Data_Models.md SS3; `frontend/src/types/clauseAnalysis.ts`'s
+    `ClauseAnalysis`). Intentionally omits `matched_patterns` — corpus
+    retrieval internals are exposed only via the separate evidence-detail
+    endpoint, never the main report (see that module's header comment)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    risk_category: RiskCategory | None = None
+    risk_subcategory: str | None = None
+    taxonomy_version: str
+
+    trigger: str | None = None
+    condition: str | None = None
+    consequence: str | None = None
+    affected_party: str | None = None
+
+    risk_level: RiskLevel
+    risk_score: float
+    confidence_level: ConfidenceLevel
+    confidence_score: float
+    abstained: bool
+    abstain_reason: str | None = None
+
+    financial_entities: list[FinancialEntity] = Field(default_factory=list)
+    evidence_spans: list[EvidenceSpan] = Field(default_factory=list)
+
+    explanation: str | None = None
+    explanation_grounded: bool | None = None
+
+    model_version: str
+    engine_version: str
+
+
+class ReportClause(BaseModel):
+    """One clause in a `/report` response. `analysis` is `None` only for the
+    rare partial-failure case where clause understanding never produced a
+    `clause_analyses` row for this clause at all (Phase 8: clause-level
+    failure isolation) — distinct from a normal `UNKNOWN`/abstained
+    analysis, which always populates `analysis` with `abstain_reason` set."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    clause_id: uuid.UUID
+    clause_index: int
+    section_heading: str | None = None
+    raw_text: str
+    analysis: ReportClauseAnalysis | None = None
+
+
+class RiskSummary(BaseModel):
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    unknown: int = 0
+
+
+class DocumentReportResponse(BaseModel):
+    """`GET /documents/{id}/report` response (API_and_Data_Models.md SS3;
+    `frontend/src/types/api.ts`'s `DocumentReport`)."""
+
+    document_id: uuid.UUID
+    document_type: DocumentType
+    summary: RiskSummary
+    clauses: list[ReportClause]
+
+
+class EvidenceMatchedPattern(BaseModel):
+    """Mirrors `frontend/src/types/clauseAnalysis.ts`'s `MatchedPattern` —
+    the evidence-detail endpoint's slimmer public shape (no `source`, unlike
+    the internal `MatchedPattern` schema above)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    corpus_pattern_id: uuid.UUID
+    similarity_score: float = Field(ge=0.0, le=1.0)
+    lexical_score: float = Field(ge=0.0, le=1.0)
+
+
+class ClauseEvidenceDetailResponse(BaseModel):
+    """`GET /documents/{id}/clauses/{clause_id}/evidence` response
+    (API_and_Data_Models.md SS3; `frontend/src/types/clauseAnalysis.ts`'s
+    `ClauseEvidenceDetail`) — the one place `matched_patterns` (with scores)
+    is intentionally exposed."""
+
+    clause_id: uuid.UUID
+    evidence_spans: list[EvidenceSpan] = Field(default_factory=list)
+    financial_entities: list[FinancialEntity] = Field(default_factory=list)
+    matched_patterns: list[EvidenceMatchedPattern] = Field(default_factory=list)

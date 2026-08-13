@@ -92,3 +92,20 @@ def delete_document_file(upload_dir: str, storage_path: str) -> None:
     if base_dir not in target.parents and target != base_dir:
         return
     target.unlink(missing_ok=True)
+
+
+def load_document_file(upload_dir: str, storage_path: str) -> bytes:
+    """Read-side counterpart to `save_document_file` — used by the analysis
+    pipeline (Phase 8) to re-derive a `ParsedDocument` at its PARSING stage,
+    since parsed text is deliberately never persisted (Phase 2 spec;
+    docs/PROVISIONAL_DECISIONS.md "Phase 2: parsed text is not persisted").
+
+    Raises `FileNotFoundError`/`OSError` on a missing or unreadable file —
+    callers are responsible for mapping that to a safe `ErrorCode`, never a
+    raw path or exception message (Security_and_Privacy_v2.md SS6).
+    """
+    base_dir = Path(upload_dir).resolve()
+    target = (base_dir / storage_path).resolve()
+    if base_dir not in target.parents and target != base_dir:
+        raise FileNotFoundError(storage_path)
+    return target.read_bytes()

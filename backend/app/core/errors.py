@@ -38,7 +38,20 @@ _DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.PASSWORD_PROTECTED: "This file is password-protected. Please upload an unprotected copy.",
     ErrorCode.LOW_TEXT_CONTENT: "We couldn't find enough readable text in this document — it may be a scanned "
     "or image-only file.",
+    # Phase 8: a document-level processing-job failure, distinct from an
+    # upload-time validation failure — the document was accepted, but
+    # segmentation could not reliably split it into clauses.
+    ErrorCode.SEGMENTATION_LOW_CONFIDENCE: "We couldn't reliably split this document into clauses. It may use "
+    "an unusual layout or formatting.",
 }
+
+
+def error_user_message(code: ErrorCode) -> str:
+    """The single pre-approved, safe message for a given `ErrorCode` —
+    exposed so other modules (e.g. the `status`/`report` endpoints
+    rendering a persisted `ProcessingJob.error_code`) never need their own
+    copy of this mapping."""
+    return _DEFAULT_MESSAGES.get(code, _DEFAULT_MESSAGES[ErrorCode.INTERNAL_ERROR])
 
 
 class ApiError(Exception):

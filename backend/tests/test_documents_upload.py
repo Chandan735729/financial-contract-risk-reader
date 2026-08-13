@@ -68,10 +68,17 @@ class TestSuccessfulUpload:
         assert document.document_type == db_models.DocumentType.UNKNOWN
         assert document.original_filename == "contract.pdf"
 
+        # Phase 8: upload schedules the rest of the pipeline as a
+        # BackgroundTasks job, which `TestClient` runs synchronously before
+        # returning control here — so by this point the job has already
+        # run segmentation through generation and reached COMPLETED (this
+        # fixture's single clause has no rule/entity/retrieval signal, so it
+        # abstains to UNKNOWN — see the dedicated pipeline tests for
+        # HIGH/MEDIUM/LOW/UNKNOWN coverage).
         job = db_session.scalars(
             select(db_models.ProcessingJob).where(db_models.ProcessingJob.document_id == document_id)
         ).one()
-        assert job.stage == db_models.ProcessingStage.SEGMENTING
+        assert job.stage == db_models.ProcessingStage.COMPLETED
         assert job.error_code is None
 
     def test_wrong_extension_is_ignored_content_still_sniffed(self, make_client):

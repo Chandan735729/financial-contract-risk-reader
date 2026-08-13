@@ -14,22 +14,27 @@ import secrets
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, File, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile, status
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.deps import get_embedding_service, get_llm_client, get_vector_store
 from app.core.config import Settings, get_settings
 from app.core.errors import ApiError
 from app.core.logging import get_logger, log_event
-from app.db.session import get_db
+from app.db.session import get_db, get_session_factory
 from app.models import db_models
 from app.models.enums import DocumentType, ErrorCode, ProcessingStage
 from app.models.schemas import DocumentUploadResponse
+from app.pipeline.analysis_pipeline import run_analysis_pipeline_in_background
 from app.services import storage
+from app.services.embedding_service import EmbeddingService
+from app.services.llm_client import GenerationLLMClient
 from app.services.parsing.detection import detect_file_kind
 from app.services.parsing.docx_parser import parse_docx
 from app.services.parsing.models import ParseResult
 from app.services.parsing.pdf_parser import parse_pdf
+from app.services.retrieval.vector_store import ChromaVectorStore
 
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
 logger = get_logger(__name__)
@@ -79,9 +84,14 @@ def _parse(kind: str, data: bytes, settings: Settings) -> ParseResult:
 
 @router.post("", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    session_factory: sessionmaker[Session] = Depends(get_session_factory),
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+    vector_store: ChromaVectorStore = Depends(get_vector_store),
+    llm_client: GenerationLLMClient | None = Depends(get_llm_client),
 ) -> DocumentUploadResponse:
     data = await _read_upload_within_limit(file, settings.max_upload_size_bytes)
 
@@ -152,6 +162,22 @@ async def upload_document(
         document_id=str(document_id),
         stage="parsing",
         document_type=DocumentType.UNKNOWN.value,
+    )
+
+    # Segmentation-onward runs as a background task, single-document-at-a-
+    # time per worker (Technical_Architecture_v2.md SS9 "MVP in-process"; no
+    # Celery/Redis). Starlette only starts this after the response is sent,
+    # by which point `db` (this request's session) is already closed — the
+    # task opens its own session from `session_factory` instead (see
+    # `db.session.get_session_factory`).
+    background_tasks.add_task(
+        run_analysis_pipeline_in_background,
+        session_factory,
+        document_id,
+        settings=settings,
+        embedding_service=embedding_service,
+        vector_store=vector_store,
+        llm_client=llm_client,
     )
 
     return DocumentUploadResponse(document_id=document_id, access_token=access_token)

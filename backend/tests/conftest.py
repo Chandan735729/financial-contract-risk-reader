@@ -25,6 +25,7 @@ from app.core.config import get_settings as real_get_settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import create_db_engine, create_session_factory  # noqa: E402
 from app.db.session import get_db as real_get_db  # noqa: E402
+from app.db.session import get_session_factory as real_get_session_factory  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import db_models  # noqa: E402,F401
 
@@ -131,14 +132,33 @@ def utcnow() -> datetime:
 
 
 @pytest.fixture()
-def make_client(db_session: Session, tmp_path) -> Iterator[Callable[..., TestClient]]:
+def make_client(
+    db_session: Session,
+    engine: Engine,
+    embedding_service,
+    vector_store,
+    tmp_path,
+) -> Iterator[Callable[..., TestClient]]:
     """Factory fixture for a `TestClient` wired to the real app with the DB
     dependency overridden to the test's in-memory session and the settings
     dependency overridden to an isolated `tmp_path` upload directory.
 
+    Also overrides `get_session_factory`/`get_embedding_service`/
+    `get_vector_store` (Phase 8): `POST /documents` schedules a
+    `BackgroundTasks` pipeline run that opens its own session, resolved
+    *at request time* -- without this override it would build a real
+    `EmbeddingService` (slow model load) and a real disk-persisted
+    `ChromaVectorStore` (default `chroma_persist_dir`), and a session bound
+    to a throwaway `sqlite:///:memory:` engine the test's own `db_session`
+    never sees. `create_session_factory(engine)` reuses this test's own
+    `StaticPool`-backed engine so the background task's fresh session sees
+    exactly the same in-memory database `db_session` does.
+
     Each call accepts `Settings` field overrides (e.g. `max_pdf_pages=1`) so
     individual tests can exercise limits without a shared global config.
     """
+    from app.api.deps import get_embedding_service as real_get_embedding_service
+    from app.api.deps import get_vector_store as real_get_vector_store
 
     def make(**settings_overrides: Any) -> TestClient:
         settings = Settings(
@@ -157,6 +177,9 @@ def make_client(db_session: Session, tmp_path) -> Iterator[Callable[..., TestCli
 
         app.dependency_overrides[real_get_db] = override_get_db
         app.dependency_overrides[real_get_settings] = override_get_settings
+        app.dependency_overrides[real_get_session_factory] = lambda: create_session_factory(engine)
+        app.dependency_overrides[real_get_embedding_service] = lambda: embedding_service
+        app.dependency_overrides[real_get_vector_store] = lambda: vector_store
         return TestClient(app)
 
     yield make

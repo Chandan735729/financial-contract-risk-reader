@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.documents import router as documents_router
 from app.api.health import router as health_router
+from app.api.reports import router as reports_router
 from app.core.config import get_settings
 from app.core.errors import install_exception_handlers
 from app.core.logging import configure_logging, get_logger, log_event
@@ -57,3 +58,4 @@ async def assign_request_id(request: Request, call_next):
 
 app.include_router(health_router)
 app.include_router(documents_router)
+app.include_router(reports_router)

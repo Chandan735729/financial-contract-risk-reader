@@ -84,7 +84,11 @@ export interface Clause {
   clause_index: number;
   section_heading: string | null;
   raw_text: string;
-  analysis: ClauseAnalysis;
+  // null only for the rare partial-failure case where clause understanding
+  // never produced a clause_analyses row at all (Phase 8 clause-level
+  // failure isolation) — distinct from a normal UNKNOWN/abstained analysis,
+  // which is always present with abstain_reason set.
+  analysis: ClauseAnalysis | null;
 }
 
 export interface RiskSummary {

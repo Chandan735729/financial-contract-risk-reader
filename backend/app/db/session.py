@@ -71,3 +71,21 @@ def get_db() -> Generator[Session, None, None]:
         raise
     finally:
         session.close()
+
+
+def get_session_factory() -> sessionmaker[Session]:
+    """`Depends(get_session_factory)` — for the rare caller (Phase 8's
+    background pipeline task) that needs to open its *own* session outside
+    the request/response cycle, rather than reusing the request-scoped
+    session `get_db` yields.
+
+    This matters specifically for `BackgroundTasks`: Starlette runs them
+    only *after* the response has been sent, which is after `get_db`'s
+    `finally: session.close()` has already executed — the request's
+    session is gone by then, so a background task must open a fresh one
+    from the same engine. Exposed as its own dependency (not just called
+    directly) so tests can override it to point at the same
+    `StaticPool`-backed test engine `db_session` uses, exactly like `get_db`
+    is overridden (see `tests/conftest.py`).
+    """
+    return _process_session_factory()

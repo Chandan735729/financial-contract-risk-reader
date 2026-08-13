@@ -1550,3 +1550,44 @@ consistent with Phase 6.6's precedent of documenting a rejected fix rather
 than forcing one that trades a clear regression for a partial gain. See
 `docs/EXPLANATION_GROUNDING_NOTES.md` §6.2 for the full writeup and §6.3
 for the parallel, still-open "conditionality changed" limitation.
+
+## P8.1 Access-token transport: `Authorization: Bearer`, not a query parameter
+
+**Location:** `backend/app/api/deps.py::require_document_access`
+
+API_and_Data_Models.md SS3 requires "access token required" on every
+document-scoped read endpoint but never specifies the transport mechanism.
+A query parameter (`?access_token=...`) was the first, simpler design —
+until Phase 8's own logging-safety test (`test_pipeline_logging_safety.py`)
+caught it leaking: the test HTTP client's own request-logging instrumentation
+logged the full URL, including the token, at INFO level. This is not just a
+test artifact — it is exactly what a real reverse-proxy or web-server access
+log, browser history entry, or `Referer` header would also capture for a
+query-string secret (a well-known OWASP anti-pattern: sensitive data in
+URLs). Switched to `Authorization: Bearer <token>` instead, which none of
+those surfaces record by default. No frontend consumer of these three
+endpoints exists yet (only the upload response's `access_token` field is
+currently typed), so this carried no migration cost.
+
+## P8.2 Known limitation: mid-sentence "Rs." abbreviation can fragment `detect_uncovered_material_claims`'s sentence split
+
+**Location:** `backend/app/services/grounding_guard.py::_split_sentences`
+(unchanged — documented, not fixed, per Phase 8's orchestration-only scope)
+
+Found while building Phase 8's 8-clause end-to-end test
+(`test_analysis_pipeline_e2e.py`): `_SENTENCE_SPLIT_RE` splits on any
+`.`/`!`/`?` followed by whitespace, so an explanation containing "Rs. 5,000"
+mid-sentence is fragmented into "...Rs." + "5,000 ...", and the second
+fragment is evaluated as its own independently-detected material claim —
+one that (correctly, given the fragment alone) fails numeric verification,
+since neither the corpus's direct-scan token ("rs.5,000") nor the entity's
+comma-stripped fallback token ("5000") matches a bare "5,000". This is a
+real, narrow edge case of the Phase 7.5 independent claim-coverage
+detector's sentence splitter, not a Phase 8 orchestration bug — reusing the
+same class of finding as P7.10/the conditionality-change limitation
+(`docs/EXPLANATION_GROUNDING_NOTES.md` §6.3): a genuinely-grounded
+explanation can still be rejected if it echoes source currency formatting
+containing a mid-sentence abbreviation period. Worked around at the test
+level (the scripted response avoids the "Rs." + comma pattern); left
+unfixed here since Phase 8's brief is orchestration/integration only and
+explicitly excludes changing `grounding_guard.py`.
